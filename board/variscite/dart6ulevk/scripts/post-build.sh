@@ -6,6 +6,10 @@
 # genimage configuration file
 #
 
+set -e
+
+BOARD_DIR="$(dirname $0)/../"
+
 main()
 {
 	local DTB_LIST="$(sed -n 's/^BR2_LINUX_KERNEL_INTREE_DTS_NAME="\([\/a-z0-9 \-]*\)"$/\1/p' ${BR2_CONFIG})"
