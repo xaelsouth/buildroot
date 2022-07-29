@@ -1,0 +1,40 @@
+--- src/include/configs/mx6ul_var_dart.h.orig	2022-07-29 22:40:02.862650417 +0200
++++ src/include/configs/mx6ul_var_dart.h	2022-07-29 23:17:22.272257744 +0200
+@@ -287,6 +287,10 @@
+ #elif defined(CONFIG_ENV_IS_IN_NAND)
+ #define CONFIG_ENV_OFFSET		0x400000
+ #define CONFIG_ENV_SIZE			SZ_128K
++#elif defined(CONFIG_ENV_IS_IN_EXT4)
++#define CONFIG_ENV_SIZE		  SZ_8K
++#elif defined(CONFIG_ENV_IS_IN_FAT)
++#define CONFIG_ENV_SIZE		  SZ_8K
+ #endif
+ 
+ #define CONFIG_FAT_WRITE
+--- src/board/variscite/mx6ul_var_dart/mx6ul_var_dart.c.orig	2022-07-29 22:39:44.450769409 +0200
++++ src/board/variscite/mx6ul_var_dart/mx6ul_var_dart.c	2022-07-29 22:41:54.577926352 +0200
+@@ -856,7 +856,9 @@
+ 	add_board_boot_modes(board_boot_modes);
+ #endif
+ 
+-#ifdef CONFIG_ENV_IS_IN_MMC
++#if defined(CONFIG_ENV_IS_IN_MMC) ||\
++      defined(CONFIG_ENV_IS_IN_EXT4) ||\
++        defined(CONFIG_ENV_IS_IN_FAT)
+ 	board_late_mmc_init();
+ #endif
+ 
+--- src/configs/mx6ul_var_dart_mmc_defconfig	2022-04-07 01:00:44.000000000 +0200
++++ src/configs/mx6ul_var_dart_mmc_defconfig.orig	2022-07-30 00:09:20.000000000 +0200
+@@ -35,7 +35,10 @@
+ CONFIG_CMD_EXT4_WRITE=y
+ CONFIG_CMD_FAT=y
+ CONFIG_CMD_FS_GENERIC=y
+-CONFIG_ENV_IS_IN_MMC=y
++CONFIG_ENV_IS_IN_FAT=y
++CONFIG_ENV_FAT_INTERFACE="mmc"
++CONFIG_ENV_FAT_DEVICE_AND_PART="0:1"
++CONFIG_ENV_FAT_FILE="uboot.env"
+ CONFIG_USB=y
+ CONFIG_USB_STORAGE=y
+ CONFIG_USB_GADGET=y

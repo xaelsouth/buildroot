@@ -2,11 +2,11 @@
 Variscite DART-6UL EVK board
 ****************************
 
-This file documents the Buildroot support for the Variscite DART-6UL board
-based on NXP/Freescale i.MX6 UltraLite.
+This file documents the Buildroot support for the Variscite DART-6UL
+board based on NXP/Freescale i.MX6 UltraLite.
 
-Please read the DART-6UL EVK Quick Start Guide [1] and DART-6UL v1.X, DART-6UL-5G v2.X
-Datasheet [4] for an introduction to the board.
+Please read the DART-6UL EVK Quick Start Guide [1] and DART-6UL v1.X,
+DART-6UL-5G v2.X Datasheet [4] for an introduction to the board.
 
 Build
 =====
@@ -23,8 +23,8 @@ Or
 
   $ make variscite_dart6ulevk_nand_defconfig
 
-if you plan to use a board with NAND. However, this option is in planning and
-not supported now.
+if you plan to use a board with NAND. However, this option is in
+planning and not supported now.
 
 Then you can edit the build options using
 
@@ -35,10 +35,11 @@ Build all components:
   $ make
 
 You will find in ./output/images/ the following files:
-  - imx6ul-var-dart-6ulcustomboard-emmc-wifi.dtb
-  - imx6ul-var-dart-6ulcustomboard-emmc-sd-card.dtb
-  - imx6ul-var-dart-6ulcustomboard-nand-wifi.dtb
-  - imx6ul-var-dart-6ulcustomboard-nand-sd-card.dtb
+  - imx6ull-var-dart-6ulcustomboard-emmc-wifi.dtb
+  - imx6ull-var-dart-6ulcustomboard-emmc-sd-card.dtb
+  - imx6ull-var-dart-6ulcustomboard-nand-wifi.dtb
+  - imx6ull-var-dart-6ulcustomboard-nand-sd-card.dtb
+  file:///tmp/tot.patch
   - rootfs.ext4
   - rootfs.tar
   - sdcard.img
@@ -68,7 +69,7 @@ For details about the medium image layout, see the definition in
 board/freescale/common/imx/genimage.cfg.template.
 
 Boot the DART-6UL EVK board
-=========================
+===========================
 
 To boot your newly created system (refer to the [1] for guidance):
 - insert the microSD card in the microSD slot of the board;
