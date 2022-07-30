@@ -39,7 +39,6 @@ You will find in ./output/images/ the following files:
   - imx6ull-var-dart-6ulcustomboard-emmc-sd-card.dtb
   - imx6ull-var-dart-6ulcustomboard-nand-wifi.dtb
   - imx6ull-var-dart-6ulcustomboard-nand-sd-card.dtb
-  file:///tmp/tot.patch
   - rootfs.ext4
   - rootfs.tar
   - sdcard.img
