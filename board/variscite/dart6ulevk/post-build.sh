@@ -22,6 +22,8 @@ main()
 		cp -f "${LINUX_DIR}/arch/arm/boot/dts/`basename $dt`.dtb" "${BINARIES_DIR}/"
 	done
 
+	chmod 600 $TARGET_DIR/etc/NetworkManager/system-connections/*.nmconnection
+
 	exit $?
 }
 
