@@ -86,4 +86,5 @@ References
 [2] https://www.variscite.com/wp-content/uploads/2017/12/VAR-6ULCustomBoard-Datasheet.pdf
 [3] https://www.variscite.com/wp-content/uploads/2017/12/DART-6UL_Product_Brief.pdf
 [4] https://www.variscite.com/wp-content/uploads/2018/01/DART-6UL_DART-6UL-5G-Datasheet.pdf
-[5] https://variwiki.com/index.php?title=DART-6UL
+[5] https://www.variscite.com/wp-content/uploads/2017/12/VAR-6ULCustomboard-Schematics.pdf
+[6] https://variwiki.com/index.php?title=DART-6UL
