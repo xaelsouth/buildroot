@@ -6,8 +6,7 @@ BOARD_DIR="$(dirname $0)"
 
 main()
 {
-	local rc=0
-	exit $rc
+	exit 0
 }
 
 main $@
