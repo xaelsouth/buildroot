@@ -1,0 +1,22 @@
+dhcp
+
+setenv serverip 192.168.2.200
+
+tftp ${loadaddr} sdcard.img
+
+echo ${loadaddr}
+# In the following command, take the hex value from the above command, divide it by 0x200, and round up to the nearest whole number
+mmc write ${loadaddr} 0 0x57001
+
+setenv mmcbootpart 3
+
+run loadimage
+run loadfdt
+boot
+
+
+1) Write sdcard.img to uSD-Card
+2) Set the switches for booting from uSD-Card
+3) Get into U-Boot
+4) Switch mmc device from SD (mmc dev 0) to MMC (mmc dev 1) 
+5) 

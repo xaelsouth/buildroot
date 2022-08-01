@@ -17,7 +17,7 @@ dtb_list()
 	#	echo -n "\"`basename $dt`.dtb\", "
 	#done
 
-	echo -n "\"imx6ulz-var-dart-6ulcustomboard-emmc-wifi.dtb\", "
+	echo -n "\"imx6ull-var-dart-6ulcustomboard-emmc-wifi.dtb\", "
 }
 
 #
