@@ -1,22 +1,53 @@
 dhcp
 
-setenv serverip 192.168.2.200
+setenv serverip 192.168.2.122
 
 tftp ${loadaddr} sdcard.img
 
-echo ${loadaddr}
+# echo ${loadaddr}
 # In the following command, take the hex value from the above command, divide it by 0x200, and round up to the nearest whole number
 mmc write ${loadaddr} 0 0x57001
 
-setenv mmcbootpart 3
+run splashdisable
+setenv mmcbootpart 5
+setenv mmcrootpart 6
+saveenv
+boot
 
 run loadimage
 run loadfdt
-boot
 
 
 1) Write sdcard.img to uSD-Card
 2) Set the switches for booting from uSD-Card
 3) Get into U-Boot
-4) Switch mmc device from SD (mmc dev 0) to MMC (mmc dev 1) 
-5) 
+4) Switch mmc device from SD (mmc dev 0) to MMC (mmc dev 1)
+5)
+
+
+setenv bc_bootcount 0
+setenv bc_update_available 1
+setenv bc_rootpart_primary 6
+setenv bc_bootpart_secondary 9
+setenv bc_rootpart ${bc_rootpart_primary}
+
+
+setenv bootchoose '\
+if itest ${bc_update_available} -ne 0; then\
+    echo "Update available!";\
+    if itest ${bc_bootcount} -le 1; then\
+	if setexpr bc_bootcount ${bc_bootcount} + 1; then\
+	    if itest ${bc_rootpart} -eq ${bc_bootpart_secondary}; then\
+		setenv bc_rootpart ${bc_rootpart_primary};\
+	    else \
+		setenv bc_rootpart ${bc_rootpart_secondary};\
+	    fi\
+	    if saveenv; then echo "Switched root partition to ${bc_rootpart}."; fi\
+	fi\
+    fi\
+else\
+    echo "No update available.";\
+fi\
+'
+
+
