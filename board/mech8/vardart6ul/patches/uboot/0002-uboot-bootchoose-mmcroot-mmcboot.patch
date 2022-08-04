@@ -1,0 +1,57 @@
+--- src/include/configs/mx6ul_var_dart.h.orig	2022-08-02 22:10:17.000000000 
++++ src/include/configs/mx6ul_var_dart.h	2022-08-02 23:49:04.000000000 
+@@ -73,14 +73,14 @@
+ 
+ 
+ #define MMC_BOOT_ENV_SETTINGS \
+ 	"mmcdev="__stringify(CONFIG_SYS_MMC_ENV_DEV)"\0" \
+ 	"mmcblk=0\0" \
+ 	"mmcautodetect=yes\0" \
+-	"mmcbootpart=1\0" \
+-	"mmcrootpart=2\0" \
++	"mmcbootpart=6\0" \
++	"mmcrootpart=7\0" \
+ 	"mmcargs=setenv bootargs console=${console},${baudrate} " \
+ 		"root=/dev/mmcblk${mmcblk}p${mmcrootpart} rootwait rw " \
+ 		"${cma_size}\0" \
+ 	"loadbootenv=" \
+ 		"load mmc ${mmcdev}:${mmcbootpart} ${loadaddr} ${bootdir}/${bootenv}\0" \
+ 	"importbootenv=echo Importing bootenv from mmc ...; " \
+@@ -139,13 +139,37 @@
+ 
+ #endif
+ 
+ #define OPT_ENV_SETTINGS \
+ 	"optargs=setenv bootargs ${bootargs} ${kernelargs};\0"
+ 
++#define FWUPDATE_ENV_SETTINGS \
++	"bc_bootcount=0\0"\
++	"bc_update_available=0\0"\
++	"bc_rootpart_primary=6\0"\
++	"bc_rootpart_secondary=9\0"\
++	"bc_rootpart=6\0"\
++	"bootchoose=if itest ${bc_update_available} -ne 0; then " \
++			    "echo 'Update available!'; " \
++			    "if itest ${bc_bootcount} -le 1; then " \
++				"if itest ${bc_bootcount} -eq 0; then echo 'Trying to boot update.'; else echo 'Recovering from update!'; fi; " \
++				"if setexpr bc_bootcount ${bc_bootcount} + 1; then " \
++				    "if itest ${bc_rootpart} -eq ${bc_rootpart_secondary}; then " \
++					"setenv bc_rootpart ${bc_rootpart_primary}; " \
++				    "else  " \
++					"setenv bc_rootpart ${bc_rootpart_secondary}; " \
++				    "fi; " \
++				    "if saveenv; then echo \"Switched root partition to ${bc_rootpart}.\"; fi; " \
++				"fi; " \
++			    "else " \
++				"echo \"bc_bootcount = ${bc_bootcount}, so do nothing.\"; " \
++			    "fi; " \
++			"fi;\0"
++
+ #define CONFIG_EXTRA_ENV_SETTINGS \
++	FWUPDATE_ENV_SETTINGS \
+ 	BOOT_ENV_SETTINGS \
+ 	OPT_ENV_SETTINGS \
+ 	"bootenv=uEnv.txt\0" \
+ 	"script=boot.scr\0" \
+ 	"image=zImage\0" \
+ 	"console=ttymxc0\0" \

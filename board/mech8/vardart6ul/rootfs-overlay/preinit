@@ -1,0 +1,217 @@
+#!/bin/busybox sh
+
+set -eo pipefail
+set +x
+
+mount -t proc     proc     /proc
+grep -w "/dev" /proc/mounts || mount -t devtmpfs none /dev
+mount -t sysfs    sysfs    /sys
+
+NEWROOT_DIR=/mnt/newroot
+
+MMC_DEV=`cat /proc/cmdline | grep -Eo "root=/dev/mmcblk[0-9]+" | grep -Eo "[0-9]+"`
+UBOOT_ENV_PARTITION=/dev/mmcblk${MMC_DEV}p1
+SPARE_PARTITION=/dev/mmcblk${MMC_DEV}p2
+EXTENDED_PARTITION=/dev/mmcblk${MMC_DEV}p3
+FACTORY_PARTITION=/dev/mmcblk${MMC_DEV}p5
+
+function panic() {
+    echo s > /proc/sysrq-trigger
+    echo b > /proc/sysrq-trigger
+}
+
+function set_ro() {
+	hdparm -r1 "$1"
+}
+
+function protect_disk() {
+	# whole disk
+	set_ro /dev/mmcblk${MMC_DEV}
+
+	# unique partitions
+	set_ro $EXTENDED_PARTITION
+	set_ro $SPARE_PARTITION
+	set_ro $FACTORY_PARTITION
+
+	# current slot
+	set_ro $KERNEL_PARTITION
+}
+
+function remount_root_ro_and_protect() {
+	mount -o remount,ro /
+	set_ro $ROOT_PARTITION
+}
+
+function mount_rootfs_overlay() {
+	OVERLAY_DIR=/mnt/overlay
+	OVERLAY_LOWER_DIR=$OVERLAY_DIR/lower
+	OVERLAY_UPPER_DIR=$OVERLAY_DIR/upper
+	OVERLAY_WORK_DIR=$OVERLAY_DIR/work
+
+	# Prepare mount points for overlayfs
+	mkdir -p ${OVERLAY_DIR}
+	mount -t tmpfs tmpfs ${OVERLAY_DIR}
+
+	# Mount overlayfs
+	mkdir -p ${OVERLAY_LOWER_DIR} ${OVERLAY_UPPER_DIR} ${OVERLAY_WORK_DIR} ${NEWROOT_DIR}
+	
+	mount --bind / ${OVERLAY_LOWER_DIR}
+
+	mount -t overlay \
+	      -o lowerdir=${OVERLAY_LOWER_DIR},upperdir=${OVERLAY_UPPER_DIR},workdir=${OVERLAY_WORK_DIR} \
+	      rootfs-overlay \
+	      ${NEWROOT_DIR}
+}
+
+function mount_uboot_environment_partition() {
+	mkdir -p /boot/uboot
+	mount -o rw,sync,noatime ${UBOOT_ENV_PARTITION} /boot/uboot
+}
+
+function move_uboot_environment_partition() {
+	mkdir -p ${NEWROOT_DIR}/boot/uboot
+	mount --move /boot/uboot ${NEWROOT_DIR}/boot/uboot
+}
+
+function mount_factory_partition() {
+	mkdir -p ${NEWROOT_DIR}/factory
+	mount -o ro ${FACTORY_PARTITION} ${NEWROOT_DIR}/factory
+}
+
+function mount_data_with_retry() {
+	mount_cmd=$1
+
+	if ! $mount_cmd ; then
+		echo "Error mounting data partition, try fixing with e2fsck"
+
+		# fsck exits with 1 if errors were corrected - just retry mounting regardless of its return code
+		/sbin/e2fsck -f -y "${DATA_PARTITION}" || true
+
+		if $mount_cmd ; then
+			echo "Fix successful, data partition mounted"
+		else
+			echo "Could not fix data partition, wipe it"
+
+			if /sbin/mkfs.ext4 \
+				-F \
+				-U clear \
+				-E hash_seed=88cfa414-1374-11ed-ad26-0faf2aedddb8 \
+				-I 256 \
+				"${DATA_PARTITION}" \
+				&& $mount_cmd ; then
+				echo "Wipe successful, data partition mounted"
+			else
+				echo "Wipe or mount unsuccessfull, cannot boot"
+				panic
+			fi
+		fi
+	fi
+}
+
+function mount_data_partition() {
+	eval `fw_printenv bc_update_available`
+	eval `fw_printenv bc_bootcount`
+	if [ $bc_update_available -gt 0 -a $bc_bootcount -eq 1 ]; then
+		if [ $bc_rootpart -eq 6 ]; then
+			OLD_DATA_PARTITION=/dev/mmcblk${MMC_DEV}p11
+		else
+			OLD_DATA_PARTITION=/dev/mmcblk${MMC_DEV}p8
+		fi
+		echo "First boot after update, copy $OLD_DATA_PARTITION to $DATA_PARTITION"
+		dd if=$OLD_DATA_PARTITION of=$DATA_PARTITION bs=16M
+	fi
+
+	mkdir -p ${NEWROOT_DIR}/data
+	mount_data_with_retry "mount ${DATA_PARTITION} ${NEWROOT_DIR}/data"
+}
+
+function create_partitions()
+{
+    local image_file="$1"
+
+    sed -e 's/\s*\([\+0-9a-zA-Z]*\).*/\1/' <<EOF | fdisk "$image_file"
+    p # print partition table
+
+    #d # remove last partition to make empty spaces in the end
+    #8 # with number 8
+
+    n # new partition
+    l # logical partition
+    370688 # start at beginning of the disk
+    +256M # size 256 MB
+    t  # set partition type
+    8  # with number 8
+    83 # to 'linux'
+
+    n # new partition
+    l # logical partition
+    897024 # start at beginning of the disk
+    +32M # size 32 MB
+    t  # set partition type
+    9  # with number 9
+    0C # to 'vfat'
+
+    n # new partition
+    l # logical partition
+    964608 # start at beginning of the disk
+    +128M # size 128 MB
+    t  # set partition type
+    10 # with number 10
+    83 # to 'linux'
+
+    n # new partition
+    l # logical partition
+    1228800 # start at beginning of the disk
+      # default - to the end of the disk
+    #+256M # size 256M
+    t  # set partition type
+    11 # with number 11
+    83 # to 'linux'
+
+    p # print partition table
+    w # write settings
+    q # quit
+EOF
+}
+
+if [ ! -e /dev/mmcblk${MMC_DEV}p9 ]; then
+    echo "Secondary partitions do not exist"
+    create_partitions /dev/mmcblk${MMC_DEV} || true
+
+    echo "Reread partition table by reboot"
+    sync; sync; panic
+
+    #echo "Reread partition table by hdparm"
+    #hdparm -z /dev/mmcblk${MMC_DEV}
+
+    #echo "Copy current kernel partition to the created one"
+    #dd if=/dev/mmcblk${MMC_DEV}p6 of=/dev/mmcblk${MMC_DEV}p9 bs=16M
+
+    #echo "Copy current rootfs partition to the created one"
+    #dd if=/dev/mmcblk${MMC_DEV}p7 of=/dev/mmcblk${MMC_DEV}p10 bs=16M
+fi
+
+mount_uboot_environment_partition
+
+eval `fw_printenv bc_rootpart`
+
+KERNEL_PARTITION=/dev/mmcblk${MMC_DEV}p$((bc_rootpart+0))
+ROOT_PARTITION=/dev/mmcblk${MMC_DEV}p$((bc_rootpart+1))
+DATA_PARTITION=/dev/mmcblk${MMC_DEV}p$((bc_rootpart+2))
+
+protect_disk
+
+mount_rootfs_overlay
+mount_factory_partition
+mount_data_partition
+
+move_uboot_environment_partition
+
+remount_root_ro_and_protect
+
+umount /proc
+umount /dev
+#mount --move /dev ${NEWROOT_DIR}/dev
+
+# Switch to new rootfs
+exec chroot ${NEWROOT_DIR} /sbin/init

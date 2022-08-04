@@ -76,6 +76,22 @@ image sdcard.img {
 
   partition DATA0 {
     partition-type = 0x83
-    size = 675M
+    image = "data.ext4"
+  }
+
+  partition KERNEL1 {
+    partition-type = 0xC
+    image = "kernel.vfat"
+  }
+
+  partition ROOTFS1 {
+    size = 128M
+    partition-type = 0x83
+    image = "rootfs.ext4"
+  }
+
+  partition DATA1 {
+    partition-type = 0x83
+    image = "data.ext4"
   }
 }

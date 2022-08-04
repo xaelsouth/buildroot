@@ -134,8 +134,10 @@ main()
 
 	rm -rf "${GENIMAGE_TMP}"
 
-	make_ext4 ${BINARIES_DIR}/factory.ext4 4M
 	make_file ${BINARIES_DIR}/uboot.env 8K
+	make_ext4 ${BINARIES_DIR}/spare.ext4 4M
+	make_ext4 ${BINARIES_DIR}/factory.ext4 4M
+	make_ext4 ${BINARIES_DIR}/data.ext4 256M
 
 	genimage \
 		--rootpath "${TARGET_DIR}" \

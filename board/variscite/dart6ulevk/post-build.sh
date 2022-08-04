@@ -24,7 +24,8 @@ main()
 
 	chmod 600 $TARGET_DIR/etc/NetworkManager/system-connections/*.nmconnection
 
-	touch -a -m -t `date -u +"%Y%m%d%H%M"` $TARGET_DIR/usr/lib/clock-epoch
+	touch -a -m -t 200001010000 $TARGET_DIR/usr/lib/clock-epoch
+	#touch -a -m -t `date -u +"%Y%m%d%H%M"` $TARGET_DIR/usr/lib/clock-epoch
 
 	exit $?
 }
