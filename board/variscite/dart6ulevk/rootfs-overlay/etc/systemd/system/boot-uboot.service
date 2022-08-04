@@ -1,0 +1,16 @@
+[Unit]
+Description=Mount partition with U-Boot environment
+Before=basic.target
+After=local-fs.target sysinit.target
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+#ConditionPathExists=!/boot/uboot/uboot.env
+ExecCondition=test ! -e /boot/uboot/uboot.env
+ExecStartPre=mkdir -p /boot/uboot
+ExecStart=mount -o rw,sync,noatime,noexec `cat /proc/cmdline | grep -Eo 'root=[a-z/0-9]+p' | grep -Eo '[a-z/0-9]+p' | grep '^/dev'`1 /boot/uboot
+RemainAfterExit=true
+
+[Install]
+WantedBy=basic.target
