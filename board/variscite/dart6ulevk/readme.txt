@@ -77,6 +77,8 @@ To boot your newly created system (refer to the [1] for guidance):
 - put a micro USB cable into the Debug USB Port and connect using a terminal
   emulator at 115200 bps, 8n1;
 - power on the board.
+- do "saveenv" once in U-Boot console if you want to have access to U-Boot
+  environment in userspace.
 
 Enjoy!
 
