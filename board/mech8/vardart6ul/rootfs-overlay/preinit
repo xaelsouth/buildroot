@@ -25,9 +25,6 @@ function set_ro() {
 }
 
 function protect_disk() {
-	# whole disk
-	set_ro /dev/mmcblk${MMC_DEV}
-
 	# unique partitions
 	set_ro $EXTENDED_PARTITION
 	set_ro $SPARE_PARTITION
@@ -40,6 +37,9 @@ function protect_disk() {
 function remount_root_ro_and_protect() {
 	mount -o remount,ro /
 	set_ro $ROOT_PARTITION
+
+	# whole disk
+	set_ro /dev/mmcblk${MMC_DEV}
 }
 
 function mount_rootfs_overlay() {
