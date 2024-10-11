@@ -1,0 +1,31 @@
+--- src/include/configs/mx6ul_var_dart.h.orig	2022-08-04 12:34:20.000000000 
++++ src/include/configs/mx6ul_var_dart.h	2022-08-04 12:35:04.000000000 
+@@ -77,13 +77,13 @@
+ 	"mmcblk=0\0" \
+ 	"mmcautodetect=yes\0" \
+ 	"mmcbootpart=6\0" \
+ 	"mmcrootpart=7\0" \
+ 	"mmcargs=setenv bootargs console=${console},${baudrate} " \
+ 		"root=/dev/mmcblk${mmcblk}p${mmcrootpart} rootwait rw " \
+-		"${cma_size}\0" \
++		"${cma_size} init=/preinit\0" \
+ 	"loadbootenv=" \
+ 		"load mmc ${mmcdev}:${mmcbootpart} ${loadaddr} ${bootdir}/${bootenv}\0" \
+ 	"importbootenv=echo Importing bootenv from mmc ...; " \
+ 		"env import -t ${loadaddr} ${filesize}\0" \
+ 	"loadbootscript=" \
+ 		"load mmc ${mmcdev}:${mmcbootpart} ${loadaddr} ${bootdir}/${script};\0" \
+@@ -91,12 +91,13 @@
+ 		"source\0" \
+ 	"loadimage=load mmc ${mmcdev}:${mmcbootpart} ${loadaddr} ${bootdir}/${image}\0" \
+ 	"loadfdt=run findfdt; " \
+ 		"echo fdt_file=${fdt_file}; " \
+ 		"load mmc ${mmcdev}:${mmcbootpart} ${fdt_addr} ${bootdir}/${fdt_file}\0" \
+ 	"mmcboot=echo Booting from mmc ...; " \
++		"run bootchoose; " \
+ 		"run mmcargs; " \
+ 		"run optargs; " \
+ 		"if test ${boot_fdt} = yes || test ${boot_fdt} = try; then " \
+ 			"if run loadfdt; then " \
+ 				"bootz ${loadaddr} - ${fdt_addr}; " \
+ 			"else " \
