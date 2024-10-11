@@ -1,0 +1,25 @@
+[connection]
+id=eth1-dhcp
+uuid=1112d8a0-0fa1-11ed-af29-9f2583b6c1f2
+type=ethernet
+# This is the lateral ethernet connector on the bottom side of the board.
+interface-name=eth1
+permissions=
+
+[ethernet]
+mac-address-blacklist=
+
+[ipv4]
+
+dns-search=
+method=manual
+
+[ipv6]
+addr-gen-mode=stable-privacy
+dns-search=
+method=auto
+
+[proxy]
+
+[Network]
+DHCP=yes
