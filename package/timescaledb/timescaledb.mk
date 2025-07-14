@@ -4,10 +4,11 @@
 #
 ################################################################################
 
-TIMESCALEDB_VERSION = 2.7.0
+TIMESCALEDB_VERSION = 2.21.0
 TIMESCALEDB_SITE = $(call github,timescale,timescaledb,$(TIMESCALEDB_VERSION))
 TIMESCALEDB_LICENSE = Apache-2.0
 TIMESCALEDB_LICENSE_FILES = LICENSE
+TIMESCALEDB_CPE_ID_VENDOR = timescale
 
 TIMESCALEDB_DEPENDENCIES = postgresql
 
@@ -22,6 +23,7 @@ TIMESCALEDB_CONF_OPTS = \
 	-DPG_PKGLIBDIR=lib/postgresql \
 	-DPG_SHAREDIR=share/postgresql \
 	-DPG_BINDIR=bin \
+	-DPG_PATH="$(STAGING_DIR)/usr" \
 	-DPG_CPPFLAGS="$(TARGET_CPPFLAGS) " \
 	-DPG_CFLAGS="$(TARGET_CFLAGS) " \
 	-DPG_LDFLAGS="$(TARGET_LDFLAGS) " \

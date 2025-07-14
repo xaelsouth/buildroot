@@ -4,7 +4,7 @@
 #
 ################################################################################
 
-GKRELLM_VERSION = 2.3.11
+GKRELLM_VERSION = 2.4.0
 GKRELLM_SITE = http://gkrellm.srcbox.net/releases
 GKRELLM_SOURCE = gkrellm-$(GKRELLM_VERSION).tar.bz2
 GKRELLM_LICENSE = GPL-3.0+
@@ -12,7 +12,13 @@ GKRELLM_LICENSE_FILES = COPYING COPYRIGHT
 GKRELLM_DEPENDENCIES = host-pkgconf libglib2 $(TARGET_NLS_DEPENDENCIES)
 GKRELLM_BUILD_OPTS = \
 	STRIP="" \
-	SYS_LIBS=$(TARGET_NLS_LIBS)
+	SYS_LIBS="$(GKRELLM_SYS_LIBS)"
+
+GKRELLM_SYS_LIBS = $(TARGET_NLS_LIBS)
+
+ifeq ($(BR2_TOOLCHAIN_HAS_LIBATOMIC),y)
+GKRELLM_SYS_LIBS += -latomic
+endif
 
 ifeq ($(BR2_PACKAGE_LM_SENSORS),y)
 GKRELLM_DEPENDENCIES += lm-sensors

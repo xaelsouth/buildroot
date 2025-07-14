@@ -10,20 +10,17 @@ SCONESERVER_LICENSE = GPL-2.0+
 SCONESERVER_LICENSE_FILES = COPYING
 SCONESERVER_DEPENDENCIES = \
 	host-pkgconf \
-	$(if $(BR2_PACKAGE_PCRE),pcre) \
+	$(if $(BR2_PACKAGE_LIBXCRYPT),libxcrypt) \
+	pcre \
 	zlib
 # disable image as it fails to build with ImageMagick
 # disable markdown module because its git submodule cmark
 # https://github.com/sconemad/sconeserver/tree/master/markdown
 # has no cross-compile support provided by the sconeserver build system
 SCONESERVER_CONF_OPTS += \
+	-DCMAKE_CXX_FLAGS="$(TARGET_CXXFLAGS) -std=c++11" \
 	-DWITH_IMAGE=OFF \
 	-DWITH_MARKDOWN=OFF
-
-ifeq ($(BR2_PACKAGE_LIBXML2),y)
-# Needed to fix build failure when icu is enabled in libxml2
-SCONESERVER_CONF_OPTS += -DCMAKE_CXX_FLAGS="-std=c++11"
-endif
 
 ifeq ($(BR2_PACKAGE_OPENSSL),y)
 SCONESERVER_DEPENDENCIES += openssl
@@ -67,7 +64,7 @@ SCONESERVER_CONF_OPTS += -DWITH_MATHS=OFF
 endif
 
 ifeq ($(BR2_PACKAGE_SCONESERVER_MYSQL),y)
-SCONESERVER_DEPENDENCIES += mysql
+SCONESERVER_DEPENDENCIES += mariadb
 SCONESERVER_CONF_OPTS += -DWITH_MYSQL=ON
 else
 SCONESERVER_CONF_OPTS += -DWITH_MYSQL=OFF

@@ -4,7 +4,7 @@
 #
 ################################################################################
 
-BASH_VERSION = 5.1.16
+BASH_VERSION = 5.2.37
 BASH_SITE = $(BR2_GNU_MIRROR)/bash
 BASH_DEPENDENCIES = ncurses readline host-bison
 BASH_LICENSE = GPL-3.0+
@@ -25,6 +25,10 @@ BASH_CONF_ENV += \
 	bash_cv_sys_named_pipes=present \
 	bash_cv_func_sigsetjmp=present \
 	bash_cv_printf_a_format=yes
+
+ifeq ($(BR2_HOST_GCC_AT_LEAST_15),y)
+BASH_CONF_ENV += CFLAGS_FOR_BUILD="$(HOST_CFLAGS) -std=gnu17"
+endif
 
 # The static build needs some trickery
 ifeq ($(BR2_STATIC_LIBS),y)
@@ -62,10 +66,10 @@ endif
 
 # Add /bin/bash to /etc/shells otherwise some login tools like dropbear
 # can reject the user connection. See man shells.
-define BASH_ADD_MKSH_TO_SHELLS
+define BASH_ADD_BASH_TO_SHELLS
 	grep -qsE '^/bin/bash$$' $(TARGET_DIR)/etc/shells \
 		|| echo "/bin/bash" >> $(TARGET_DIR)/etc/shells
 endef
-BASH_TARGET_FINALIZE_HOOKS += BASH_ADD_MKSH_TO_SHELLS
+BASH_TARGET_FINALIZE_HOOKS += BASH_ADD_BASH_TO_SHELLS
 
 $(eval $(autotools-package))

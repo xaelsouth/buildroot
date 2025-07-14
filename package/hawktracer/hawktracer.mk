@@ -4,8 +4,8 @@
 #
 ################################################################################
 
-HAWKTRACER_VERSION = e53b07bc812c4cfe8f6253ddb48ac43de8fa74a8
-HAWKTRACER_SITE = $(call github,amzn,hawktracer,$(HAWKTRACER_VERSION))
+HAWKTRACER_VERSION = 0.11.0
+HAWKTRACER_SITE = $(call github,amzn,hawktracer,v$(HAWKTRACER_VERSION))
 HAWKTRACER_LICENSE = MIT
 HAWKTRACER_LICENSE_FILES = LICENSE
 HAWKTRACER_INSTALL_STAGING = YES
@@ -36,9 +36,13 @@ endif
 
 # Enable threads support if supported by toolchain
 ifeq ($(BR2_TOOLCHAIN_HAS_THREADS),y)
-HAWKTRACER_CONF_OPTS += -DENABLE_THREADS=ON
+HAWKTRACER_CONF_OPTS += \
+	-DENABLE_CPU_USAGE_FEATURE=ON \
+	-DENABLE_THREADS=ON
 else
-HAWKTRACER_CONF_OPTS += -DENABLE_THREADS=OFF
+HAWKTRACER_CONF_OPTS += \
+	-DENABLE_CPU_USAGE_FEATURE=OFF \
+	-DENABLE_THREADS=OFF
 endif
 
 $(eval $(cmake-package))

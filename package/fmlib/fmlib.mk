@@ -4,11 +4,10 @@
 #
 ################################################################################
 
-FMLIB_VERSION = fsl-sdk-v2.0
-FMLIB_SITE = https://source.codeaurora.org/external/qoriq/qoriq-yocto-sdk/fmlib
-FMLIB_SITE_METHOD = git
-FMLIB_LICENSE = BSD-3-Clause, GPL-2.0+
-FMLIB_LICENSE_FILES = COPYING
+FMLIB_VERSION = lf-6.12.3-1.0.0-3-g7a58eca
+FMLIB_SITE = $(call github,nxp-qoriq,fmlib,$(FMLIB_VERSION))
+FMLIB_LICENSE = BSD-3-Clause
+FMLIB_LICENSE_FILES = LICENSE
 FMLIB_DEPENDENCIES = linux
 FMLIB_INSTALL_STAGING = YES
 

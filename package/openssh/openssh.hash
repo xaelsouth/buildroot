@@ -1,4 +1,4 @@
-# From https://www.openssh.com/txt/release-9.0 (base64 encoded)
-sha256  03974302161e9ecce32153cfa10012f1e65c8f3750f573a73ab1befd5972a28a  openssh-9.0p1.tar.gz
+# From https://www.openssh.com/txt/release-10.0
+sha256  021a2e709a0edf4250b1256bd5a9e500411a90dddabea830ed59cef90eb9d85c  openssh-10.0p1.tar.gz
 # Locally calculated
-sha256  d6807e99f3d159145c659060f57c3fa74e109faa39326dbfc38674cb550fd104  LICENCE
+sha256  5bb5b160726ef5756e4f32fe95b35249c294962419650f48d05134b486d27ccb  LICENCE
