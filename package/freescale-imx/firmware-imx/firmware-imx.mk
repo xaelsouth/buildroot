@@ -46,6 +46,45 @@ ifneq ($(FIRMWARE_IMX_DDR_VERSION),)
 FIRMWARE_IMX_DDR_VERSION_SUFFIX = _$(FIRMWARE_IMX_DDR_VERSION)
 endif
 
+ifeq ($(BR2_PACKAGE_FIRMWARE_IMX_NEEDS_DDR_FW_IMX95),y)
+FIRMWARE_IMX_DDRFW_DIR = $(@D)/firmware/ddr/synopsys
+
+define FIRMWARE_IMX_GENERATE_DDR_HDR
+	wc -c $(FIRMWARE_IMX_DDRFW_DIR)/$(strip $(1)).bin | \
+	awk '{printf "%.8x", $$1}' | \
+	sed -e 's/\(..\)\(..\)\(..\)\(..\)/\4\3\2\1/' | \
+	xxd -r -p >  $(BINARIES_DIR)/$(strip $(3)).bin
+
+	wc -c $(FIRMWARE_IMX_DDRFW_DIR)/$(strip $(2)).bin | \
+	awk '{printf "%.8x", $$1}' | \
+	sed -e 's/\(..\)\(..\)\(..\)\(..\)/\4\3\2\1/' | \
+	xxd -r -p >>  $(BINARIES_DIR)/$(strip $(3)).bin
+endef
+
+define FIRMWARE_IMX_INSTALL_IMAGE_DDR_FW
+	$(call FIRMWARE_IMX_GENERATE_DDR_HDR, \
+		lpddr4x_imem_v202409,
+		lpddr4x_dmem_v202409,
+		fw-header)
+
+	$(call FIRMWARE_IMX_GENERATE_DDR_HDR, \
+		lpddr4x_imem_qb_v202409,
+		lpddr4x_dmem_qb_v202409,
+		fw-header-qb)
+
+	cat $(BINARIES_DIR)/fw-header.bin \
+	$(FIRMWARE_IMX_DDRFW_DIR)/lpddr4x_imem_v202409.bin \
+	$(FIRMWARE_IMX_DDRFW_DIR)/lpddr4x_dmem_v202409.bin \
+	$(BINARIES_DIR)/fw-header-qb.bin \
+	$(FIRMWARE_IMX_DDRFW_DIR)/lpddr4x_imem_qb_v202409.bin \
+	$(FIRMWARE_IMX_DDRFW_DIR)/lpddr4x_dmem_qb_v202409.bin > $(BINARIES_DIR)/ddr_fw.bin
+
+	rm -f $(BINARIES_DIR)/fw-header.bin
+	rm -f $(BINARIES_DIR)/fw-header-qb.bin
+endef
+
+endif
+
 ifeq ($(BR2_PACKAGE_FIRMWARE_IMX_NEEDS_DDR_FW_IMX9),y)
 FIRMWARE_IMX_DDRFW_DIR = $(@D)/firmware/ddr/synopsys
 
