@@ -1,0 +1,199 @@
+--- a/drivers/mtd/nand/raw/gpmi-nand/gpmi-nand.c
++++ b/drivers/mtd/nand/raw/gpmi-nand/gpmi-nand.c
+@@ -2037,6 +2037,7 @@
+ 	unsigned int page;
+ 	u8 *buffer = nand_get_data_buf(chip);
+ 	int found_an_ncb_fingerprint = false;
++	unsigned int read_errors = 0;
+ 	int ret;
+ 
+ 	/* Compute the number of strides in a search area. */
+@@ -2061,8 +2062,10 @@
+ 		 */
+ 		ret = nand_read_page_op(chip, page, 12, buffer,
+ 					strlen(fingerprint));
+-		if (ret)
++		if (ret) {
++			read_errors++;
+ 			continue;
++		}
+ 
+ 		/* Look for the fingerprint. */
+ 		if (!memcmp(buffer, fingerprint, strlen(fingerprint))) {
+@@ -2074,11 +2077,23 @@
+ 
+ 	nand_deselect_target(chip);
+ 
+-	if (found_an_ncb_fingerprint)
++	if (found_an_ncb_fingerprint) {
+ 		dev_info(dev, "\tFound a fingerprint\n");
+-	else
+-		dev_warn(dev, "\tNo fingerprint found\n");
+-	return found_an_ncb_fingerprint;
++		return true;
++	}
++
++	/*
++	 * Unreadable pages mean we can't tell whether the stamp exists, so
++	 * don't let the caller wrongly start a destructive re-transcription.
++	 */
++	if (read_errors) {
++		dev_err(dev, "\tNo fingerprint found, %u read(s) failed\n",
++			read_errors);
++		return -EIO;
++	}
++
++	dev_warn(dev, "\tNo fingerprint found\n");
++	return false;
+ }
+ 
+ /* Writes a transcription stamp. */
+@@ -2097,7 +2112,10 @@
+ 	unsigned int stride;
+ 	unsigned int page;
+ 	u8 *buffer = nand_get_data_buf(chip);
++	bool *bad_block;
++	unsigned int written = 0;
+ 	int status;
++	int ret = 0;
+ 
+ 	/* Compute the search area geometry. */
+ 	block_size_in_pages = mtd->erasesize / mtd->writesize;
+@@ -2113,17 +2131,53 @@
+ 	dev_dbg(dev, "\tin Strides: %u\n", search_area_size_in_strides);
+ 	dev_dbg(dev, "\tin Pages  : %u\n", search_area_size_in_pages);
+ 
++	bad_block = kcalloc(search_area_size_in_blocks, sizeof(*bad_block),
++			    GFP_KERNEL);
++	if (!bad_block)
++		return -ENOMEM;
++
+ 	nand_select_target(chip, 0);
+ 
+-	/* Loop over blocks in the first search area, erasing them. */
++	/*
++	 * Record which blocks of the search area are bad before touching
++	 * anything: the block mark lives in the first byte of the block and
++	 * an erase would wipe it. Nothing has been modified yet, so it is
++	 * safe to bail out on a read error here.
++	 */
++	for (block = 0; block < search_area_size_in_blocks; block++) {
++		u8 mark;
++
++		status = nand_read_page_op(chip, block * block_size_in_pages,
++					   0, &mark, 1);
++		if (status) {
++			dev_err(dev, "[%s] Reading the mark of block %u failed: %d\n",
++				__func__, block, status);
++			ret = status;
++			goto out;
++		}
++		bad_block[block] = mark != 0xff;
++	}
++
++	/*
++	 * Erase the good blocks of the search area. Bad blocks are left alone
++	 * so that their (already transcribed) marks survive.
++	 */
+ 	dev_dbg(dev, "Erasing the search area...\n");
+ 
+ 	for (block = 0; block < search_area_size_in_blocks; block++) {
+-		/* Erase this block. */
++		if (bad_block[block])
++			continue;
++
+ 		dev_dbg(dev, "\tErasing block 0x%x\n", block);
+ 		status = nand_erase_op(chip, block);
+-		if (status)
+-			dev_err(dev, "[%s] Erase failed.\n", __func__);
++		if (status) {
++			dev_err(dev, "[%s] Erasing block %u failed: %d\n",
++				__func__, block, status);
++			/* Don't stamp a block that failed to erase. */
++			bad_block[block] = true;
++			if (!ret)
++				ret = status;
++		}
+ 	}
+ 
+ 	/* Loop through the first search area, writing NCB fingerprints. */
+@@ -2132,16 +2186,18 @@
+ 		/* Compute the page addresses. */
+ 		page = stride * rom_geo->stride_size_in_pages;
+ 
+-		status = nand_read_page_op(chip, page, 0, buffer, mtd->writesize);
+-		if (status) {
+-			dev_err(dev, "[%s] Read failed.\n", __func__);
++		if (bad_block[page / block_size_in_pages]) {
++			dev_dbg(dev, "Skipping page 0x%x in a bad block\n",
++				page);
+ 			continue;
+ 		}
+ 
+-		/* Clear the OOB buffer. */
++		/*
++		 * The raw write copies the metadata from the OOB buffer to the
++		 * start of the page, which is where the block mark is on MX23.
++		 * Good blocks must keep it erased.
++		 */
+ 		memset(chip->oob_poi, ~0, mtd->oobsize);
+-		/* Preserve bad block mark as it has already been transcribed. */
+-		chip->oob_poi[0] = buffer[0];
+ 
+ 		/* Write the NCB fingerprint into the page buffer. */
+ 		memset(buffer, ~0, mtd->writesize);
+@@ -2151,13 +2207,29 @@
+ 		dev_dbg(dev, "Writing an NCB fingerprint in page 0x%x\n", page);
+ 
+ 		status = chip->ecc.write_page_raw(chip, buffer, 0, page);
+-		if (status)
+-			dev_err(dev, "[%s] Write failed.\n", __func__);
++		if (status) {
++			dev_err(dev, "[%s] Writing page 0x%x failed: %d\n",
++				__func__, page, status);
++			if (!ret)
++				ret = status;
++		} else {
++			written++;
++		}
++	}
++
++	/* The ROM can't find the NCB without at least one fingerprint. */
++	if (!written) {
++		dev_err(dev, "[%s] No NCB fingerprint could be written\n",
++			__func__);
++		if (!ret)
++			ret = -EIO;
+ 	}
+ 
++out:
+ 	nand_deselect_target(chip);
++	kfree(bad_block);
+ 
+-	return 0;
++	return ret;
+ }
+ 
+ static int mx23_boot_init(struct gpmi_nand_data  *this)
+@@ -2179,7 +2251,10 @@
+ 	 * transcription stamp. If we find it, then we don't have to do
+ 	 * anything -- the block marks are already transcribed.
+ 	 */
+-	if (mx23_check_transcription_stamp(this))
++	ret = mx23_check_transcription_stamp(this);
++	if (ret < 0)
++		return ret;
++	if (ret)
+ 		return 0;
+ 
+ 	/*
+@@ -2229,8 +2304,7 @@
+ 	}
+ 
+ 	/* Write the stamp that indicates we've transcribed the block marks. */
+-	mx23_write_transcription_stamp(this);
+-	return 0;
++	return mx23_write_transcription_stamp(this);
+ }
+ 
+ static int nand_boot_init(struct gpmi_nand_data  *this)
