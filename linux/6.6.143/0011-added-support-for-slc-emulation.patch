@@ -1,0 +1,26 @@
+--- a/drivers/mtd/nand/raw/nand_samsung.c	2026-06-23 17:08:12.000000000 
++++ a/drivers/mtd/nand/raw/nand_samsung.c	2026-06-23 17:15:36.000000000 
+@@ -122,18 +122,22 @@
+ {
+ 	struct mtd_info *mtd = nand_to_mtd(chip);
+ 
+ 	if (mtd->writesize > 512)
+ 		chip->options |= NAND_SAMSUNG_LP_OPTIONS;
+ 
+-	if (!nand_is_slc(chip))
++	if (!nand_is_slc(chip)) {
+ 		chip->options |= NAND_BBM_LASTPAGE;
++
++		chip->options |= NAND_NEED_SCRAMBLING;
++		mtd_set_pairing_scheme(mtd, &dist3_pairing_scheme);
++	}
+ 	else
+ 		chip->options |= NAND_BBM_FIRSTPAGE | NAND_BBM_SECONDPAGE;
+ 
+ 	return 0;
+ }
+ 
+ const struct nand_manufacturer_ops samsung_nand_manuf_ops = {
+ 	.detect = samsung_nand_decode_id,
+ 	.init = samsung_nand_init,
+ };
