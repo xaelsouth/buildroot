@@ -1,0 +1,177 @@
+--- a/drivers/rtc/rtc-stmp3xxx.c	2026-06-19 23:39:44.000000000 
++++ a/drivers/rtc/rtc-stmp3xxx.c	2026-06-23 22:33:05.000000000 
+@@ -50,16 +50,22 @@
+ #define STMP3XXX_RTC_PERSISTENT0_ALARM_WAKE		(1 << 7)
+ 
+ #define STMP3XXX_RTC_PERSISTENT1		0x70
+ /* missing bitmask in headers */
+ #define STMP3XXX_RTC_PERSISTENT1_FORCE_UPDATER	0x80000000
+ 
++#define STMP3XXX_RTC_PERSISTENT2		0x80
++#define STMP3XXX_RTC_PERSISTENT3		0x90
++#define STMP3XXX_RTC_PERSISTENT4		0xA0
++#define STMP3XXX_RTC_PERSISTENT5		0xB0
++
+ struct stmp3xxx_rtc_data {
+ 	struct rtc_device *rtc;
+ 	void __iomem *io;
+ 	int irq_alarm;
++	spinlock_t nvram_lock;	/* against concurrent RTC/NVRAM access */
+ };
+ 
+ #if IS_ENABLED(CONFIG_STMP3XXX_RTC_WATCHDOG)
+ /**
+  * stmp3xxx_wdt_set_timeout - configure the watchdog inside the STMP3xxx RTC
+  * @dev: the parent device of the watchdog (= the RTC)
+@@ -237,12 +243,103 @@
+ 
+ 	if (!rtc_data)
+ 		return;
+ 
+ 	writel(STMP3XXX_RTC_CTRL_ALARM_IRQ_EN,
+ 		rtc_data->io + STMP3XXX_RTC_CTRL + STMP_OFFSET_REG_CLR);
++}
++
++static const struct nvmem_cell_info stmp3xxx_rtc_nvram_cells[] = {
++	{
++		.name = "RTC_PERSISTENT0",
++		.offset = STMP3XXX_RTC_PERSISTENT0,
++		.bytes = 4
++	}, {
++		.name = "RTC_PERSISTENT1",
++		.offset = STMP3XXX_RTC_PERSISTENT1,
++		.bytes = 4
++	}, {
++		.name = "RTC_PERSISTENT2",
++		.offset = STMP3XXX_RTC_PERSISTENT2,
++		.bytes = 4
++	}, {
++		.name = "RTC_PERSISTENT3",
++		.offset = STMP3XXX_RTC_PERSISTENT3,
++		.bytes = 4
++	}, {
++		.name = "RTC_PERSISTENT4",
++		.offset = STMP3XXX_RTC_PERSISTENT4,
++		.bytes = 4
++	}, {
++		.name = "RTC_PERSISTENT5",
++		.offset = STMP3XXX_RTC_PERSISTENT5,
++		.bytes = 4
++	}
++};
++
++static const struct nvmem_keepout stmp3xxx_rtc_nvram_keepout[] = {
++	{
++		.start = STMP3XXX_RTC_CTRL,
++		.end = STMP3XXX_RTC_PERSISTENT0
++	}, {
++		.start = STMP3XXX_RTC_PERSISTENT0 + STMP_OFFSET_REG_SET,
++		.end = STMP3XXX_RTC_PERSISTENT1
++	}, {
++		.start = STMP3XXX_RTC_PERSISTENT1 + STMP_OFFSET_REG_SET,
++		.end = STMP3XXX_RTC_PERSISTENT2
++	}, {
++		.start = STMP3XXX_RTC_PERSISTENT2 + STMP_OFFSET_REG_SET,
++		.end = STMP3XXX_RTC_PERSISTENT3
++	}, {
++		.start = STMP3XXX_RTC_PERSISTENT3 + STMP_OFFSET_REG_SET,
++		.end = STMP3XXX_RTC_PERSISTENT4
++	}, {
++		.start = STMP3XXX_RTC_PERSISTENT4 + STMP_OFFSET_REG_SET,
++		.end = STMP3XXX_RTC_PERSISTENT5
++	}, {
++		.start = STMP3XXX_RTC_PERSISTENT5 + STMP_OFFSET_REG_SET,
++		.end = 0x2000
++	}
++};
++
++static int stmp3xxx_rtc_nvram_read(void *priv, unsigned int offset,
++					void *val, size_t bytes)
++{
++	struct stmp3xxx_rtc_data *rtc_data = priv;
++	u32 *buf = val;
++
++	spin_lock_irq(&rtc_data->nvram_lock);
++
++	while (bytes) {
++		*buf++ = readl(rtc_data->io + offset);
++		bytes -= 4;
++		offset += 4;
++	}
++
++	spin_unlock_irq(&rtc_data->nvram_lock);
++
++	return 0;
++}
++
++static int stmp3xxx_rtc_nvram_write(void *priv, unsigned int offset,
++					void *val, size_t bytes)
++{
++	struct stmp3xxx_rtc_data *rtc_data = priv;
++	const u32 *buf = val;
++
++	spin_lock_irq(&rtc_data->nvram_lock);
++
++	while (bytes) {
++		writel(*buf++, rtc_data->io + offset);
++		bytes -= 4;
++		offset += 4;
++	}
++
++	spin_unlock_irq(&rtc_data->nvram_lock);
++
++	return 0;
+ }
+ 
+ static int stmp3xxx_rtc_probe(struct platform_device *pdev)
+ {
+ 	struct stmp3xxx_rtc_data *rtc_data;
+ 	struct resource *r;
+@@ -271,12 +368,14 @@
+ 
+ 	rtc_stat = readl(rtc_data->io + STMP3XXX_RTC_STAT);
+ 	if (!(rtc_stat & STMP3XXX_RTC_STAT_RTC_PRESENT)) {
+ 		dev_err(&pdev->dev, "no device onboard\n");
+ 		return -ENODEV;
+ 	}
++
++	spin_lock_init(&rtc_data->nvram_lock);
+ 
+ 	platform_set_drvdata(pdev, rtc_data);
+ 
+ 	/*
+ 	 * Resetting the rtc stops the watchdog timer that is potentially
+ 	 * running. So (assuming it is running on purpose) don't reset if the
+@@ -362,12 +461,32 @@
+ 		return err;
+ 	}
+ 
+ 	rtc_data->rtc->ops = &stmp3xxx_rtc_ops;
+ 	rtc_data->rtc->range_max = U32_MAX;
+ 
++	struct nvmem_config nvram_cfg = {
++		.name = "stmp3xxx-rtc-nvram",
++		.read_only = false,
++		.size = resource_size(r),
++		.word_size = 4,
++		.stride = 4,
++		.reg_read = stmp3xxx_rtc_nvram_read,
++		.reg_write = stmp3xxx_rtc_nvram_write,
++		.ncells = ARRAY_SIZE(stmp3xxx_rtc_nvram_cells),
++		.cells = stmp3xxx_rtc_nvram_cells,
++		.nkeepout = ARRAY_SIZE(stmp3xxx_rtc_nvram_keepout),
++		.keepout = stmp3xxx_rtc_nvram_keepout,
++	};
++	nvram_cfg.priv = rtc_data;
++	err = devm_rtc_nvmem_register(rtc_data->rtc, &nvram_cfg);
++	if (err) {
++		dev_err(&pdev->dev, "Can't register RTC nvram!\n");
++		return err;
++	}
++
+ 	err = devm_rtc_register_device(rtc_data->rtc);
+ 	if (err)
+ 		return err;
+ 
+ 	stmp3xxx_wdt_register(pdev);
+ 	return 0;
