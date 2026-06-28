@@ -1,0 +1,18 @@
+--- a/drivers/base/platform.orig	2026-06-19 23:39:44.000000000 
++++ a/drivers/base/platform.c	2026-06-24 00:45:33.000000000 
+@@ -444,14 +444,13 @@
+ 	ret = fwnode_irq_get_byname(dev_fwnode(&dev->dev), name);
+ 	if (ret > 0 || ret == -EPROBE_DEFER)
+ 		return ret;
+ 
+ 	r = platform_get_resource_byname(dev, IORESOURCE_IRQ, name);
+ 	if (r) {
+-		if (WARN(!r->start, "0 is an invalid IRQ number\n"))
+-			return -EINVAL;
++		WARN(!r->start, "0 might be an invalid IRQ number\n");
+ 		return r->start;
+ 	}
+ 
+ 	return -ENXIO;
+ }
+ 
