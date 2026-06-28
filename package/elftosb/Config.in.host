@@ -1,0 +1,5 @@
+config BR2_PACKAGE_HOST_ELFTOSB
+	bool "host-elftosb"
+	help
+		Elftosb is a Freescale toolset to build binary image files (like U-Boot.sb)
+		to be used with CPUs imx23, imx28, stp37xx
