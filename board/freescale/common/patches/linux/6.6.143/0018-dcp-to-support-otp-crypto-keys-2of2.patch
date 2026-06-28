@@ -1,0 +1,202 @@
+--- linux-6.6.21/drivers/crypto/mxs-dcp.c	2025-10-10 13:07:51.000000000 
++++ linux-6.6.21/drivers/crypto/mxs-dcp.c	2025-10-10 13:08:17.000000000 
+@@ -1,11 +1,17 @@
+-// SPDX-License-Identifier: GPL-2.0-or-later
+ /*
+- * Freescale i.MX23/i.MX28 Data Co-Processor driver
++ * Freescale i.MX23/i.MX28/i.MX6SL/i.MX6ULL Data Co-Processor driver
+  *
+  * Copyright (C) 2013 Marek Vasut <marex@denx.de>
++ *
++ * The code contained herein is licensed under the GNU General Public
++ * License. You may obtain a copy of the GNU General Public License
++ * Version 2 or later at the following locations:
++ *
++ * http://www.opensource.org/licenses/gpl-license.html
++ * http://www.gnu.org/copyleft/gpl.html
+  */
+ 
+ #include <linux/dma-mapping.h>
+ #include <linux/interrupt.h>
+ #include <linux/io.h>
+ #include <linux/kernel.h>
+@@ -170,12 +176,18 @@
+ #define MXS_DCP_CONTROL1_CIPHER_MODE_CBC	(1 << 4)
+ #define MXS_DCP_CONTROL1_CIPHER_MODE_ECB	(0 << 4)
+ #define MXS_DCP_CONTROL1_CIPHER_SELECT_AES128	(0 << 0)
+ 
+ #define MXS_DCP_CONTROL1_KEY_SELECT_SHIFT	8
+ 
++/* SNVS registers */
++#define SNVS_HPSR_REG				0x020cc014
++#define SNVS_HPSR_SSM_STATE_MASK		0xf00
++#define SNVS_HPSR_SSM_STATE_TRUSTED		0xd00
++#define SNVS_HPSR_SSM_STATE_SECURE		0xf00
++
+ static int mxs_dcp_start_dma(struct dcp_async_ctx *actx)
+ {
+ 	int dma_err;
+ 	struct dcp *sdcp = global_sdcp;
+ 	const int chan = actx->chan;
+ 	uint32_t stat;
+@@ -229,19 +241,21 @@
+ 	struct dcp *sdcp = global_sdcp;
+ 	struct dcp_dma_desc *desc = &sdcp->coh->desc[actx->chan];
+ 	struct dcp_aes_req_ctx *rctx = skcipher_request_ctx(req);
+ 	bool key_referenced = actx->key_referenced;
+ 	int ret;
+ 
+-	if (!key_referenced) {
++	if (key_referenced)
++		key_phys = dma_map_single(sdcp->dev, sdcp->coh->aes_key + AES_KEYSIZE_128,
++					  AES_KEYSIZE_128, DMA_TO_DEVICE);
++	else
+ 		key_phys = dma_map_single(sdcp->dev, sdcp->coh->aes_key,
+ 					  2 * AES_KEYSIZE_128, DMA_TO_DEVICE);
+-		ret = dma_mapping_error(sdcp->dev, key_phys);
+-		if (ret)
+-			return ret;
+-	}
++	ret = dma_mapping_error(sdcp->dev, key_phys);
++	if (ret)
++		return ret;
+ 
+ 	src_phys = dma_map_single(sdcp->dev, sdcp->coh->aes_in_buf,
+ 				  DCP_BUF_SZ, DMA_TO_DEVICE);
+ 	ret = dma_mapping_error(sdcp->dev, src_phys);
+ 	if (ret)
+ 		goto err_src;
+@@ -296,13 +310,16 @@
+ 
+ aes_done_run:
+ 	dma_unmap_single(sdcp->dev, dst_phys, DCP_BUF_SZ, DMA_FROM_DEVICE);
+ err_dst:
+ 	dma_unmap_single(sdcp->dev, src_phys, DCP_BUF_SZ, DMA_TO_DEVICE);
+ err_src:
+-	if (!key_referenced)
++	if (key_referenced)
++		dma_unmap_single(sdcp->dev, key_phys, AES_KEYSIZE_128,
++				 DMA_TO_DEVICE);
++	else
+ 		dma_unmap_single(sdcp->dev, key_phys, 2 * AES_KEYSIZE_128,
+ 				 DMA_TO_DEVICE);
+ 	return ret;
+ }
+ 
+ static int mxs_dcp_aes_block_crypt(struct crypto_async_request *arq)
+@@ -940,13 +957,13 @@
+ 		.exit			= mxs_dcp_aes_fallback_exit_tfm,
+ 	}, {
+ 		.base.cra_name		= "ecb(paes)",
+ 		.base.cra_driver_name	= "ecb-paes-dcp",
+ 		.base.cra_priority	= 401,
+ 		.base.cra_alignmask	= 15,
+-		.base.cra_flags		= CRYPTO_ALG_ASYNC | CRYPTO_ALG_INTERNAL,
++		.base.cra_flags		= CRYPTO_ALG_ASYNC,
+ 		.base.cra_blocksize	= AES_BLOCK_SIZE,
+ 		.base.cra_ctxsize	= sizeof(struct dcp_async_ctx),
+ 		.base.cra_module	= THIS_MODULE,
+ 
+ 		.min_keysize		= DCP_PAES_KEYSIZE,
+ 		.max_keysize		= DCP_PAES_KEYSIZE,
+@@ -956,13 +973,13 @@
+ 		.init			= mxs_dcp_paes_init_tfm,
+ 	}, {
+ 		.base.cra_name		= "cbc(paes)",
+ 		.base.cra_driver_name	= "cbc-paes-dcp",
+ 		.base.cra_priority	= 401,
+ 		.base.cra_alignmask	= 15,
+-		.base.cra_flags		= CRYPTO_ALG_ASYNC | CRYPTO_ALG_INTERNAL,
++		.base.cra_flags		= CRYPTO_ALG_ASYNC,
+ 		.base.cra_blocksize	= AES_BLOCK_SIZE,
+ 		.base.cra_ctxsize	= sizeof(struct dcp_async_ctx),
+ 		.base.cra_module	= THIS_MODULE,
+ 
+ 		.min_keysize		= DCP_PAES_KEYSIZE,
+ 		.max_keysize		= DCP_PAES_KEYSIZE,
+@@ -987,13 +1004,12 @@
+ 		.digestsize	= SHA1_DIGEST_SIZE,
+ 		.statesize	= sizeof(struct dcp_export_state),
+ 		.base		= {
+ 			.cra_name		= "sha1",
+ 			.cra_driver_name	= "sha1-dcp",
+ 			.cra_priority		= 400,
+-			.cra_alignmask		= 63,
+ 			.cra_flags		= CRYPTO_ALG_ASYNC,
+ 			.cra_blocksize		= SHA1_BLOCK_SIZE,
+ 			.cra_ctxsize		= sizeof(struct dcp_async_ctx),
+ 			.cra_module		= THIS_MODULE,
+ 			.cra_init		= dcp_sha_cra_init,
+ 			.cra_exit		= dcp_sha_cra_exit,
+@@ -1014,13 +1030,12 @@
+ 		.digestsize	= SHA256_DIGEST_SIZE,
+ 		.statesize	= sizeof(struct dcp_export_state),
+ 		.base		= {
+ 			.cra_name		= "sha256",
+ 			.cra_driver_name	= "sha256-dcp",
+ 			.cra_priority		= 400,
+-			.cra_alignmask		= 63,
+ 			.cra_flags		= CRYPTO_ALG_ASYNC,
+ 			.cra_blocksize		= SHA256_BLOCK_SIZE,
+ 			.cra_ctxsize		= sizeof(struct dcp_async_ctx),
+ 			.cra_module		= THIS_MODULE,
+ 			.cra_init		= dcp_sha_cra_init,
+ 			.cra_exit		= dcp_sha_cra_exit,
+@@ -1053,12 +1068,15 @@
+ static int mxs_dcp_probe(struct platform_device *pdev)
+ {
+ 	struct device *dev = &pdev->dev;
+ 	struct dcp *sdcp = NULL;
+ 	int i, ret;
+ 	int dcp_vmi_irq, dcp_irq;
++
++	void __iomem *page;
++	u32 ssm_state, offset;
+ 
+ 	if (global_sdcp) {
+ 		dev_err(dev, "Only one DCP instance allowed!\n");
+ 		return -ENODEV;
+ 	}
+ 
+@@ -1191,12 +1209,26 @@
+ 			dev_err(dev, "Failed to register %s hash!\n",
+ 				dcp_sha256_alg.halg.base.cra_name);
+ 			goto err_unregister_sha1;
+ 		}
+ 	}
+ 
++	dev_info(dev, "initialized\n");
++
++	page = ioremap(SNVS_HPSR_REG & ~(SZ_4K - 1), SZ_4K);
++	offset = SNVS_HPSR_REG & (SZ_4K - 1);
++	ssm_state = (__raw_readl(page + offset) & SNVS_HPSR_SSM_STATE_MASK);
++
++	if (ssm_state == SNVS_HPSR_SSM_STATE_TRUSTED) {
++		dev_info(dev, "Trusted State detected\n");
++	} else if (ssm_state == SNVS_HPSR_SSM_STATE_SECURE) {
++		dev_info(dev, "Secure State detected\n");
++	} else {
++		dev_warn(dev, "Not in Trusted or Secure State, Non-volatile Test Key in effect\n");
++	}
++
+ 	return 0;
+ 
+ err_unregister_sha1:
+ 	if (sdcp->caps & MXS_DCP_CAPABILITY1_SHA1)
+ 		crypto_unregister_ahash(&dcp_sha1_alg);
+ 
+@@ -1236,12 +1268,14 @@
+ 	return 0;
+ }
+ 
+ static const struct of_device_id mxs_dcp_dt_ids[] = {
+ 	{ .compatible = "fsl,imx23-dcp", .data = NULL, },
+ 	{ .compatible = "fsl,imx28-dcp", .data = NULL, },
++	{ .compatible = "fsl,imx6sl-dcp", .data = NULL, },
++	{ .compatible = "fsl,imx6ull-dcp", .data = NULL, },
+ 	{ /* sentinel */ }
+ };
+ 
+ MODULE_DEVICE_TABLE(of, mxs_dcp_dt_ids);
+ 
+ static struct platform_driver mxs_dcp_driver = {
