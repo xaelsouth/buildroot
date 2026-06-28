@@ -1,0 +1,68 @@
+--- a/arch/arm/boot/dts/nxp/mxs/imx23-evk.dts	2026-06-22 14:50:42.000000000 
++++ a/arch/arm/boot/dts/nxp/mxs/imx23-evk.dts	2026-06-22 15:22:21.000000000 
+@@ -55,13 +55,65 @@
+ 
+ 	apb@80000000 {
+ 		apbh@80000000 {
+ 			nand-controller@8000c000 {
+ 				pinctrl-names = "default";
+ 				pinctrl-0 = <&gpmi_pins_a &gpmi_pins_fixup>;
++				//nand-on-flash-bbt;
+ 				status = "okay";
++
++				partitions {
++					compatible = "fixed-partitions";
++					#address-cells = <1>;
++					#size-cells = <1>;
++
++					partition@0 {
++						label = "boot";
++						reg = <0x00000000 0x04000000>;
++					};
++
++					partition@1 {
++						label = "env1";
++						reg = <0x04000000 0x01000000>;
++					};
++
++					partition@2 {
++						label = "env2";
++						reg = <0x05000000 0x01000000>;
++					};
++
++					partition@3 {
++						label = "rootfs1";
++						slc-mode;
++						reg = <0x06000000 0x10000000>;
++					};
++
++					partition@4 {
++						label = "rootfs2";
++						slc-mode;
++						reg = <0x16000000 0x10000000>;
++					};
++
++					partition@5 {
++						label = "data1";
++						slc-mode;
++						reg = <0x26000000 0x10000000>;
++					};
++
++					partition@6 {
++						label = "data2";
++						slc-mode;
++						reg = <0x36000000 0x10000000>;
++					};
++
++					partition@7 {
++						label = "spare";
++						slc-mode;
++						reg = <0x46000000 0xba000000>;
++					};
++				};
+ 			};
+ 
+ 			ssp0: spi@80010000 {
+ 				compatible = "fsl,imx23-mmc";
+ 				pinctrl-names = "default";
+ 				pinctrl-0 = <&mmc0_4bit_pins_a &mmc0_pins_fixup>;
