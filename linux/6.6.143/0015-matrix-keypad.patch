@@ -1,0 +1,82 @@
+--- a/include/linux/input/matrix_keypad.h	2026-04-30 21:17:22.000000000 
++++ a/include/linux/input/matrix_keypad.h	2026-06-22 12:13:57.000000000 
+@@ -78,6 +78,9 @@
+ 	bool		wakeup;
+ 	bool		no_autorepeat;
+ 	bool		drive_inactive_cols;
++
++	unsigned int	rep_delay_ms;
++	unsigned int	rep_period_ms;
+ };
+ 
+ int matrix_keypad_build_keymap(const struct matrix_keymap_data *keymap_data,
+--- a/drivers/input/keyboard/matrix_keypad.c	2026-04-30 21:17:22.000000000 
++++ a/drivers/input/keyboard/matrix_keypad.c	2026-06-22 12:36:46.000000000 
+@@ -230,6 +230,7 @@
+ 	disable_row_irqs(keypad);
+ }
+ 
++#ifdef CONFIG_PM
+ static void matrix_keypad_enable_wakeup(struct matrix_keypad *keypad)
+ {
+ 	const struct matrix_keypad_platform_data *pdata = keypad->pdata;
+@@ -298,6 +299,10 @@
+ 
+ 	return 0;
+ }
++#else
++#define matrix_keypad_suspend	NULL
++#define matrix_keypad_resume	NULL
++#endif
+ 
+ static DEFINE_SIMPLE_DEV_PM_OPS(matrix_keypad_pm_ops,
+ 				matrix_keypad_suspend, matrix_keypad_resume);
+@@ -439,6 +444,14 @@
+ 	of_property_read_u32(np, "col-scan-delay-us",
+ 						&pdata->col_scan_delay_us);
+ 
++	pdata->rep_delay_ms = 250;
++	of_property_read_u32(np, "linux,repeat-delay-ms",
++						&pdata->rep_delay_ms);
++
++	pdata->rep_period_ms = 33;
++	of_property_read_u32(np, "linux,repeat-period-ms",
++						&pdata->rep_period_ms);
++
+ 	gpios = devm_kcalloc(dev,
+ 			     pdata->num_row_gpios + pdata->num_col_gpios,
+ 			     sizeof(unsigned int),
+@@ -523,8 +536,13 @@
+ 		goto err_free_mem;
+ 	}
+ 
+-	if (!pdata->no_autorepeat)
++	if (!pdata->no_autorepeat) {
+ 		__set_bit(EV_REP, input_dev->evbit);
++		input_enable_softrepeat(input_dev, pdata->rep_delay_ms, pdata->rep_period_ms);
++		dev_info(&pdev->dev, "repeat delay=%u and period=%u msec\n",
++			input_dev->rep[REP_DELAY], input_dev->rep[REP_PERIOD]);
++	}
++
+ 	input_set_capability(input_dev, EV_MSC, MSC_SCAN);
+ 	input_set_drvdata(input_dev, keypad);
+ 
+--- a/Documentation/devicetree/bindings/input/gpio-matrix-keypad.txt	2026-06-19 23:39:44.000000000 
++++ a/Documentation/devicetree/bindings/input/gpio-matrix-keypad.txt	2026-07-03 00:04:56.000000000 
+@@ -16,12 +16,16 @@
+ 			which these column lines are connected.
+ - linux,keymap:		The definition can be found at
+ 			bindings/input/matrix-keymap.txt
+ 
+ Optional Properties:
+ - linux,no-autorepeat:	do no enable autorepeat feature.
++- linux,repeat-delay-ms:	when autorepeat is enabled,
++			button pressed event will be generated after delay again.
++- linux,repeat-period-ms:	when autorepeat is enabled,
++			button pressed event will be generated after delay periodically.
+ - wakeup-source:	use any event on keypad as wakeup event.
+ 			(Legacy property supported: "linux,wakeup")
+ - debounce-delay-ms:	debounce interval in milliseconds
+ - col-scan-delay-us:	delay, measured in microseconds, that is needed
+ 			before we can scan keypad after activating column gpio
+ - drive-inactive-cols:	drive inactive columns during scan,
