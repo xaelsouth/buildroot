@@ -1,0 +1,20 @@
+--- a/drivers/mtd/nand/raw/nand_samsung.c	2026-06-19 23:39:44.000000000 
++++ a/drivers/mtd/nand/raw/nand_samsung.c	2026-06-23 02:35:47.000000000 
+@@ -60,15 +60,15 @@
+ 		}
+ 
+ 		mtd->oobsize = memorg->oobsize;
+ 
+ 		/* Get blocksize */
+ 		extid >>= 2;
+-		memorg->pages_per_eraseblock = (128 * 1024) <<
++		memorg->pages_per_eraseblock = ((128 * 1024) <<
+ 					       (((extid >> 1) & 0x04) |
+-						(extid & 0x03)) /
++						(extid & 0x03))) /
+ 					       memorg->pagesize;
+ 		mtd->erasesize = (128 * 1024) <<
+ 				 (((extid >> 1) & 0x04) | (extid & 0x03));
+ 
+ 		/* Extract ECC requirements from 5th id byte*/
+ 		extid = (chip->id.data[4] >> 4) & 0x07;
