@@ -1,0 +1,39 @@
+--- a/drivers/rtc/rtc-stmp3xxx.c	2026-06-19 23:39:44.000000000 
++++ a/drivers/rtc/rtc-stmp3xxx.c	2026-06-23 22:38:20.000000000 
+@@ -335,12 +335,21 @@
+ 	}
+ 
+ 	spin_unlock_irq(&rtc_data->nvram_lock);
+ 
+ 	return 0;
+ }
++
++/* HACK: Needed only by mxs-builtin audio driver. */
++static void __iomem *rtc_data_io = (void __iomem *)0x8005c000;
++
++void stmp3xxx_nvmem_write(u32 val, unsigned int offset)
++{
++	writel(val, rtc_data_io + offset);
++}
++EXPORT_SYMBOL(stmp3xxx_nvmem_write);
+ 
+ static int stmp3xxx_rtc_probe(struct platform_device *pdev)
+ {
+ 	struct stmp3xxx_rtc_data *rtc_data;
+ 	struct resource *r;
+ 	u32 rtc_stat;
+@@ -484,12 +493,14 @@
+ 		return err;
+ 	}
+ 
+ 	err = devm_rtc_register_device(rtc_data->rtc);
+ 	if (err)
+ 		return err;
++
++	rtc_data_io = rtc_data->io;
+ 
+ 	stmp3xxx_wdt_register(pdev);
+ 	return 0;
+ }
+ 
+ #ifdef CONFIG_PM_SLEEP
