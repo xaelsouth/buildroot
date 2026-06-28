@@ -1,0 +1,20 @@
+--- a/arch/arm/boot/dts/nxp/mxs/imx23-evk.dts	2026-06-27 19:51:13.000000000 
++++ a/arch/arm/boot/dts/nxp/mxs/imx23-evk.dts	2026-06-26 03:01:04.000000000 
+@@ -254,3 +251,17 @@
+ 		};
+ 	};
+ };
++
++&i2c {
++	pinctrl-names = "default";
++	pinctrl-0 = <&i2c_pins_a>;
++	status = "okay";    
++
++	eeprom@50 {
++		compatible = "microchip,24lc128", "atmel,24c128";
++		reg = <0x50>;
++		pagesize = <64>;
++		size = <16384>;
++		num-address-bytes = <2>;
++	};
++};
