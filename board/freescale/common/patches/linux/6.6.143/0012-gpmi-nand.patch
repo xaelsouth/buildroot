@@ -1,0 +1,97 @@
+--- a/drivers/mtd/nand/raw/gpmi-nand/gpmi-nand.c	2026-06-19 23:39:44.000000000 
++++ a/drivers/mtd/nand/raw/gpmi-nand/gpmi-nand.c	2026-07-05 11:41:07.000000000 
+@@ -873,12 +873,15 @@
+ 	clk_rate = clk_round_rate(r->clock[0], hw->clk_rate);
+ 	if (clk_rate <= min_rate) {
+ 		dev_err(this->dev, "clock setting: expected %ld, got %ld\n",
+ 			hw->clk_rate, clk_rate);
+ 		return -ENOTSUPP;
+ 	}
++	else
++		dev_info(this->dev, "clock setting: expected %ld, got %ld\n",
++			hw->clk_rate, clk_rate);
+ 
+ 	hw->clk_rate = clk_rate;
+ 	/* SDR core timings are given in picoseconds */
+ 	period_ps = div_u64((u64)NSEC_PER_SEC * 1000, hw->clk_rate);
+ 
+ 	addr_setup_cycles = TO_CYCLES(sdr->tALS_min, period_ps);
+@@ -2044,13 +2047,13 @@
+ 
+ 	nand_select_target(chip, 0);
+ 
+ 	/*
+ 	 * Loop through the first search area, looking for the NCB fingerprint.
+ 	 */
+-	dev_dbg(dev, "Scanning for an NCB fingerprint...\n");
++	dev_info(dev, "Scanning for an NCB fingerprint...\n");
+ 
+ 	for (stride = 0; stride < search_area_size_in_strides; stride++) {
+ 		/* Compute the page addresses. */
+ 		page = stride * rom_geo->stride_size_in_pages;
+ 
+ 		dev_dbg(dev, "Looking for a fingerprint in page 0x%x\n", page);
+@@ -2072,23 +2075,24 @@
+ 
+ 	}
+ 
+ 	nand_deselect_target(chip);
+ 
+ 	if (found_an_ncb_fingerprint)
+-		dev_dbg(dev, "\tFound a fingerprint\n");
++		dev_info(dev, "\tFound a fingerprint\n");
+ 	else
+-		dev_dbg(dev, "\tNo fingerprint found\n");
++		dev_warn(dev, "\tNo fingerprint found\n");
+ 	return found_an_ncb_fingerprint;
+ }
+ 
+ /* Writes a transcription stamp. */
+ static int mx23_write_transcription_stamp(struct gpmi_nand_data *this)
+ {
+ 	struct device *dev = this->dev;
+ 	struct boot_rom_geometry *rom_geo = &this->rom_geometry;
++	struct bch_geometry *geo = &this->bch_geometry;
+ 	struct nand_chip *chip = &this->nand;
+ 	struct mtd_info *mtd = nand_to_mtd(chip);
+ 	unsigned int block_size_in_pages;
+ 	unsigned int search_area_size_in_strides;
+ 	unsigned int search_area_size_in_pages;
+ 	unsigned int search_area_size_in_blocks;
+@@ -2122,21 +2126,32 @@
+ 		dev_dbg(dev, "\tErasing block 0x%x\n", block);
+ 		status = nand_erase_op(chip, block);
+ 		if (status)
+ 			dev_err(dev, "[%s] Erase failed.\n", __func__);
+ 	}
+ 
+-	/* Write the NCB fingerprint into the page buffer. */
+-	memset(buffer, ~0, mtd->writesize);
+-	memcpy(buffer + 12, fingerprint, strlen(fingerprint));
+-
+ 	/* Loop through the first search area, writing NCB fingerprints. */
+ 	dev_dbg(dev, "Writing NCB fingerprints...\n");
+ 	for (stride = 0; stride < search_area_size_in_strides; stride++) {
+ 		/* Compute the page addresses. */
+ 		page = stride * rom_geo->stride_size_in_pages;
++
++		status = nand_read_page_op(chip, page, 0, buffer, mtd->writesize);
++		if (status) {
++			dev_err(dev, "[%s] Read failed.\n", __func__);
++			continue;
++		}
++
++		/* Clear the OOB buffer. */
++		memset(chip->oob_poi, ~0, mtd->oobsize);
++		/* Preserve bad block mark as it has already been transcribed. */
++		chip->oob_poi[0] = buffer[0];
++
++		/* Write the NCB fingerprint into the page buffer. */
++		memset(buffer, ~0, mtd->writesize);
++		memcpy(buffer + 12 - geo->metadata_size, fingerprint, strlen(fingerprint));
+ 
+ 		/* Write the first page of the current stride. */
+ 		dev_dbg(dev, "Writing an NCB fingerprint in page 0x%x\n", page);
+ 
+ 		status = chip->ecc.write_page_raw(chip, buffer, 0, page);
+ 		if (status)
