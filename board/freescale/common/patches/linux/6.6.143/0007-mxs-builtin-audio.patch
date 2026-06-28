@@ -1,0 +1,403 @@
+Left base folder: linux-6.6.143/sound/soc/mxs.orig
+Right base folder: linux-6.6.143/sound/soc/mxs
+--- linux-6.6.143/sound/soc/mxs/mxs-builtin-dai.c	2026-09-12 11:34:48.000000000 
++++ linux-6.6.143/sound/soc/mxs/mxs-builtin-dai.c	2026-09-12 19:54:56.000000000 
+@@ -1,11 +1,11 @@
+ /*
+  * mxs-builtin-dai.c -- i.MX233 built-in codec ALSA Soc Audio driver
+- * 
++ *
+  * Author: Michal Ulianko <michal.ulianko@gmail.com>
+- * 
++ *
+  * Based on sound/soc/mxs/mxs-adc.c for kernel 2.6.35
+  * by Vladislav Buzov <vbuzov@embeddedalley.com>
+- * 
++ *
+  * This program is free software; you can redistribute it and/or modify
+  * it under the terms of the GNU General Public License version 2 as
+  * published by the Free Software Foundation.
+@@ -17,6 +17,7 @@
+ #include <linux/delay.h>
+ #include <linux/dma-mapping.h>
+ #include <linux/platform_device.h>
++#include <sound/dmaengine_pcm.h>
+ #include <sound/pcm.h>
+ #include <sound/pcm_params.h>
+ #include <sound/soc.h>
+@@ -80,7 +81,7 @@
+ 
+ 	while (true) {
+ 		__raw_writel(BM_AUDIOOUT_PWRDN_HEADPHONE,
+-		      mxs_adc->audioout_base + HW_AUDIOOUT_PWRDN_CLR);
++			mxs_adc->audioout_base + HW_AUDIOOUT_PWRDN_CLR);
+ 		msleep(10);
+ 		if ((__raw_readl(mxs_adc->audioout_base + HW_AUDIOOUT_ANACTRL)
+ 			& BM_AUDIOOUT_ANACTRL_SHORT_LR_STS) != 0) {
+@@ -103,9 +104,9 @@
+ 
+ 	/* power up the HEADPHONE and un-mute the HPVOL */
+ 	__raw_writel(BM_AUDIOOUT_HPVOL_MUTE,
+-	      mxs_adc->audioout_base + HW_AUDIOOUT_HPVOL_CLR);
++		mxs_adc->audioout_base + HW_AUDIOOUT_HPVOL_CLR);
+ 	__raw_writel(BM_AUDIOOUT_PWRDN_HEADPHONE,
+-		      mxs_adc->audioout_base + HW_AUDIOOUT_PWRDN_CLR);
++		mxs_adc->audioout_base + HW_AUDIOOUT_PWRDN_CLR);
+ 
+ 	/* enable irq for next short detect*/
+ 	enable_irq(mxs_adc->hp_short_irq);
+@@ -134,8 +135,8 @@
+ 	reg1 = reg1 & ~BM_AUDIOIN_ADCVOLUME_VOLUME_RIGHT;
+ 	/* minimize adc volume */
+ 	reg2 = reg1 |
+-	    BF_AUDIOIN_ADCVOLUME_VOLUME_LEFT(ADC_VOLUME_MIN) |
+-	    BF_AUDIOIN_ADCVOLUME_VOLUME_RIGHT(ADC_VOLUME_MIN);
++		BF_AUDIOIN_ADCVOLUME_VOLUME_LEFT(ADC_VOLUME_MIN) |
++		BF_AUDIOIN_ADCVOLUME_VOLUME_RIGHT(ADC_VOLUME_MIN);
+ 	__raw_writel(reg2,
+ 		mxs_adc->audioin_base + HW_AUDIOIN_ADCVOLUME);
+ 	msleep(1);
+@@ -151,10 +152,10 @@
+ 		ll = i < l ? i : l;
+ 		rr = i < r ? i : r;
+ 		reg2 = reg1 |
+-		    BF_AUDIOIN_ADCVOLUME_VOLUME_LEFT(ll) |
+-		    BF_AUDIOIN_ADCVOLUME_VOLUME_RIGHT(rr);
++			BF_AUDIOIN_ADCVOLUME_VOLUME_LEFT(ll) |
++			BF_AUDIOIN_ADCVOLUME_VOLUME_RIGHT(rr);
+ 		__raw_writel(reg2,
+-		    mxs_adc->audioin_base + HW_AUDIOIN_ADCVOLUME);
++			mxs_adc->audioin_base + HW_AUDIOIN_ADCVOLUME);
+ 		msleep(1);
+ 	}
+ 	adc_ramp_done = 1;
+@@ -209,8 +210,7 @@
+ static irqreturn_t mxs_short_irq(int irq, void *dev_id)
+ {
+ 	struct mxs_adc_priv *mxs_adc = dev_id;
+-	//struct snd_pcm_substream *substream = mxs_adc->irq_data.substream;
+-	
++
+ 	__raw_writel(BM_AUDIOOUT_ANACTRL_SHORTMODE_LR,
+ 		mxs_adc->audioout_base + HW_AUDIOOUT_ANACTRL_CLR);
+ 	__raw_writel(BM_AUDIOOUT_ANACTRL_SHORT_LR_STS,
+@@ -219,9 +219,9 @@
+ 		mxs_adc->audioout_base + HW_AUDIOOUT_ANACTRL_SET);
+ 
+ 	__raw_writel(BM_AUDIOOUT_HPVOL_MUTE,
+-	      mxs_adc->audioout_base + HW_AUDIOOUT_HPVOL_SET);
++		mxs_adc->audioout_base + HW_AUDIOOUT_HPVOL_SET);
+ 	__raw_writel(BM_AUDIOOUT_PWRDN_HEADPHONE,
+-		      mxs_adc->audioout_base + HW_AUDIOOUT_PWRDN_SET);
++		mxs_adc->audioout_base + HW_AUDIOOUT_PWRDN_SET);
+ 	__raw_writel(BM_AUDIOOUT_ANACTRL_HP_CLASSAB,
+ 		mxs_adc->audioout_base + HW_AUDIOOUT_ANACTRL_SET);
+ 
+@@ -255,12 +255,10 @@
+ 				playback ? "DAC" : "ADC");
+ 
+ 		if (playback)
+-			__raw_writel(
+-				BM_AUDIOOUT_CTRL_FIFO_UNDERFLOW_IRQ,
++			__raw_writel(BM_AUDIOOUT_CTRL_FIFO_UNDERFLOW_IRQ,
+ 				mxs_adc->audioout_base + HW_AUDIOOUT_CTRL_CLR);
+ 		else
+-			__raw_writel(
+-				BM_AUDIOIN_CTRL_FIFO_UNDERFLOW_IRQ,
++			__raw_writel(BM_AUDIOIN_CTRL_FIFO_UNDERFLOW_IRQ,
+ 				mxs_adc->audioin_base + HW_AUDIOIN_CTRL_CLR);
+ 
+ 	} else if (ctrl_reg & overflow_mask) {
+@@ -268,8 +266,7 @@
+ 				playback ? "DAC" : "ADC");
+ 
+ 		if (playback)
+-			__raw_writel(
+-				BM_AUDIOOUT_CTRL_FIFO_OVERFLOW_IRQ,
++			__raw_writel(BM_AUDIOOUT_CTRL_FIFO_OVERFLOW_IRQ,
+ 				mxs_adc->audioout_base + HW_AUDIOOUT_CTRL_CLR);
+ 		else
+ 			__raw_writel(BM_AUDIOIN_CTRL_FIFO_OVERFLOW_IRQ,
+@@ -281,8 +278,9 @@
+ 	return IRQ_HANDLED;
+ }
+ /* END IRQs */
+-
+-static void mxs_dump_registers(struct mxs_adc_priv *mxs_adc, const char *msg)
++__maybe_unused
++static void mxs_dump_registers(struct mxs_adc_priv *mxs_adc,
++								const char *msg)
+ {
+ 	dev_info(mxs_adc->dev, "%s\n", msg ? msg : "MXS AUDIO REGISTER:");
+ 	dev_info(mxs_adc->dev, "ctrl:%x\n", __raw_readl(mxs_adc->audioout_base + HW_AUDIOOUT_CTRL));
+@@ -300,58 +298,40 @@
+ }
+ 
+ static int mxs_trigger(struct snd_pcm_substream *substream,
+-				int cmd,
+-				struct snd_soc_dai *cpu_dai)
++						int cmd,
++						struct snd_soc_dai *cpu_dai)
+ {
+ 	struct mxs_adc_priv *mxs_adc = snd_soc_dai_get_drvdata(cpu_dai);
+ 	int playback = substream->stream == SNDRV_PCM_STREAM_PLAYBACK ? 1 : 0;
++	struct dma_chan *chan = snd_dmaengine_pcm_get_chan(substream);
+ 	int ret = 0;
+ 
+ 	switch (cmd) {
+ 	case SNDRV_PCM_TRIGGER_START:
+ 		dev_dbg(mxs_adc->dev, "SNDRV_PCM_TRIGGER_START\n");
+ 		//mxs_dump_registers(mxs_adc, "SNDRV_PCM_TRIGGER_START");
+-
+ 		if (playback) {
+-			/* reset DAI */
+-			__raw_writel(BM_AUDIOOUT_CTRL_RUN,
++			__raw_writel(BM_AUDIOOUT_CTRL_FIFO_UNDERFLOW_IRQ |
++						 BM_AUDIOOUT_CTRL_FIFO_OVERFLOW_IRQ |
++						 BM_AUDIOOUT_CTRL_FIFO_ERROR_IRQ_EN,
+ 				mxs_adc->audioout_base + HW_AUDIOOUT_CTRL_CLR);
+-			__raw_writel( BM_AUDIOOUT_CTRL_RUN,
+-				mxs_adc->audioout_base + HW_AUDIOOUT_CTRL_SET);
+-			/* end reset DAI */
+ 		}
+ 		fallthrough;
+ 	case SNDRV_PCM_TRIGGER_RESUME:
++		fallthrough;
+ 	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
+-
+ 		if (playback) {
+ 			/* enable the fifo error interrupt */
+-			__raw_writel(BM_AUDIOOUT_CTRL_FIFO_ERROR_IRQ_EN,
+-				mxs_adc->audioout_base + HW_AUDIOOUT_CTRL_SET);
++			__raw_writel(BM_AUDIOOUT_CTRL_FIFO_ERROR_IRQ_EN |
++						 BM_AUDIOOUT_CTRL_RUN,
++					mxs_adc->audioout_base + HW_AUDIOOUT_CTRL_SET);
+ 
+-			/* write a data to data reg to trigger the transfer */
+-			__raw_writel(0x0,
+-				mxs_adc->audioout_base + HW_AUDIOOUT_DATA);
+-
+ 			mxs_dac_schedule_ramp_work((struct delayed_work *) &dac_ramp_work);
+ 		} else {
+-//			mxs_dma_get_info(prtd->dma_ch, &dma_info);
+-//			cur_bar1 = dma_info.buf_addr;
+-//			xfer_count1 = dma_info.xfer_count;
+-
+ 			__raw_writel(BM_AUDIOIN_CTRL_RUN,
+-			mxs_adc->audioin_base + HW_AUDIOIN_CTRL_SET);
++				mxs_adc->audioin_base + HW_AUDIOIN_CTRL_SET);
+ 			udelay(100);
+ 
+-//			mxs_dma_get_info(prtd->dma_ch, &dma_info);
+-//			cur_bar2 = dma_info.buf_addr;
+-//			xfer_count2 = dma_info.xfer_count;
+-
+-//			/* check if DMA getting stuck */
+-//			if ((xfer_count1 == xfer_count2) && (cur_bar1 == cur_bar2))
+-//				/* read a data from data reg to trigger the receive */
+-//				reg = __raw_readl(mxs_adc->audioin_base + HW_AUDIOIN_DATA);
+-
+ 			mxs_adc_schedule_ramp_work((struct delayed_work *) &adc_ramp_work);
+ 		}
+ 		break;
+@@ -359,31 +339,37 @@
+ 	case SNDRV_PCM_TRIGGER_STOP:
+ 		dev_dbg(mxs_adc->dev, "SNDRV_PCM_TRIGGER_STOP\n");
+ 		//mxs_dump_registers(mxs_adc, "SNDRV_PCM_TRIGGER_STOP");
++		fallthrough;
+ 	case SNDRV_PCM_TRIGGER_SUSPEND:
++		fallthrough;
+ 	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
+-
+ 		if (playback) {
+-			
+ 			if (dac_ramp_done == 0) {
+ 				cancel_delayed_work((struct delayed_work *) &dac_ramp_work);
+ 				dac_ramp_done = 1;
+ 			}
+ 			__raw_writel(BM_AUDIOOUT_HPVOL_MUTE,
+-			  mxs_adc->audioout_base + HW_AUDIOOUT_HPVOL_SET);
++				mxs_adc->audioout_base + HW_AUDIOOUT_HPVOL_SET);
+ 			__raw_writel(BM_AUDIOOUT_SPEAKERCTRL_MUTE,
+-			  mxs_adc->audioout_base + HW_AUDIOOUT_SPEAKERCTRL_SET);
+-			/* disable the fifo error interrupt */
+-			__raw_writel(BM_AUDIOOUT_CTRL_FIFO_ERROR_IRQ_EN,
++				mxs_adc->audioout_base + HW_AUDIOOUT_SPEAKERCTRL_SET);
++
++			/* Don't clear BM_AUDIOOUT_CTRL_RUN! It will distort the sound
++				and potentially hang DMA channel. */
++			__raw_writel(BM_AUDIOOUT_CTRL_FIFO_UNDERFLOW_IRQ |
++						 BM_AUDIOOUT_CTRL_FIFO_OVERFLOW_IRQ |
++						 BM_AUDIOOUT_CTRL_FIFO_ERROR_IRQ_EN,
+ 				mxs_adc->audioout_base + HW_AUDIOOUT_CTRL_CLR);
+-			//mdelay(50);
+-			mdelay(50);
+ 		} else {
+ 			if (adc_ramp_done == 0) {
+ 				cancel_delayed_work((struct delayed_work *) &adc_ramp_work);
+ 				adc_ramp_done = 1;
+ 			}
++
+ 			__raw_writel(BM_AUDIOIN_CTRL_RUN,
+ 				mxs_adc->audioin_base + HW_AUDIOIN_CTRL_CLR);
++		}
++		if (chan) {
++			ret = dmaengine_terminate_async(chan);
+ 		}
+ 		break;
+ 
+@@ -394,6 +380,7 @@
+ 	default:
+ 		dev_err(mxs_adc->dev, "SNDRV_PCM_TRIGGER ERROR\n");
+ 		ret = -EINVAL;
++		break;
+ 	}
+ 
+ 	return ret;
+@@ -436,14 +423,23 @@
+ {
+ 	struct mxs_adc_priv *mxs_adc = snd_soc_dai_get_drvdata(cpu_dai);
+ 	int playback = substream->stream == SNDRV_PCM_STREAM_PLAYBACK ? 1 : 0;
++	struct dma_chan *chan = snd_dmaengine_pcm_get_chan(substream);
+ 
++	if (chan) {
++		(void)dmaengine_terminate_sync(chan);
++	}
++
+ 	/* Disable error interrupt */
+ 	if (playback) {
+-		__raw_writel(BM_AUDIOOUT_CTRL_FIFO_ERROR_IRQ_EN,
+-			mxs_adc->audioout_base + HW_AUDIOOUT_CTRL_CLR);
++			__raw_writel(BM_AUDIOOUT_CTRL_FIFO_UNDERFLOW_IRQ |
++						 BM_AUDIOOUT_CTRL_FIFO_OVERFLOW_IRQ |
++						 BM_AUDIOOUT_CTRL_FIFO_ERROR_IRQ_EN,
++				mxs_adc->audioout_base + HW_AUDIOOUT_CTRL_CLR);
+ 	} else {
+-		__raw_writel(BM_AUDIOIN_CTRL_FIFO_ERROR_IRQ_EN,
+-			mxs_adc->audioin_base + HW_AUDIOIN_CTRL_CLR);
++		__raw_writel(BM_AUDIOIN_CTRL_FIFO_UNDERFLOW_IRQ |
++					 BM_AUDIOIN_CTRL_FIFO_OVERFLOW_IRQ |
++					 BM_AUDIOIN_CTRL_FIFO_ERROR_IRQ_EN,
++				mxs_adc->audioin_base + HW_AUDIOIN_CTRL_CLR);
+ 	}
+ }
+ 
+@@ -451,7 +447,7 @@
+ #define MXS_ADC_FORMATS	(SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S32_LE)
+ 
+ static const struct snd_soc_dai_ops mxs_adc_dai_ops = {
+-    .probe = mxs_dai_probe,
++	.probe = mxs_dai_probe,
+ 	.startup = mxs_startup,
+ 	.trigger = mxs_trigger,
+ 	.shutdown = mxs_shutdown,
+@@ -502,15 +498,15 @@
+ 		return -ENOMEM;
+ 
+ 	mxs_adc->dev = &pdev->dev;
+-	
++
+ 	mxs_adc->audioout_base = devm_ioremap(&pdev->dev, 0x80048000, 0x2000);
+ 	if (IS_ERR(mxs_adc->audioout_base))
+ 		return PTR_ERR(mxs_adc->audioout_base);
+-	
++
+ 	mxs_adc->audioin_base = devm_ioremap(&pdev->dev, 0x8004c000, 0x2000);
+ 	if (IS_ERR(mxs_adc->audioin_base))
+ 		return PTR_ERR(mxs_adc->audioin_base);
+-	
++
+ 	mxs_adc->adc_err_irq_data.playback = 0;
+ 	mxs_adc->dac_err_irq_data.playback = 1;
+ 
+@@ -522,14 +518,14 @@
+ 		dev_err(&pdev->dev, "failed to get ADC DMA ERR irq resource: %d\n", ret);
+ 		return ret;
+ 	}
+-	
++
+ 	mxs_adc->dma_dac_err_irq = platform_get_irq(pdev, 1);
+ 	if (mxs_adc->dma_dac_err_irq < 0) {
+ 		ret = mxs_adc->dma_dac_err_irq;
+ 		dev_err(&pdev->dev, "failed to get DAC DMA ERR irq resource: %d\n", ret);
+ 		return ret;
+ 	}
+-	
++
+ 	mxs_adc->hp_short_irq = platform_get_irq(pdev, 2);
+ 	if (mxs_adc->hp_short_irq < 0) {
+ 		ret = mxs_adc->hp_short_irq;
+@@ -603,7 +599,7 @@
+ static struct platform_driver mxs_adc_dai_driver = {
+ 	.probe = mxs_adc_probe,
+ 	.remove = mxs_adc_remove,
+-	
++
+ 	.driver = {
+ 		.name = "mxs-builtin-cpu-dai",
+ 		.owner = THIS_MODULE,
+@@ -612,7 +608,7 @@
+ };
+ 
+ module_platform_driver(mxs_adc_dai_driver);
+- 
++
+ MODULE_DESCRIPTION("Freescale MXS ADC/DAC SoC Codec DAI Driver");
+ MODULE_AUTHOR("Michal Ulianko <michal.ulianko@gmail.com>");
+ MODULE_LICENSE("GPL");
+--- linux-6.6.143/sound/soc/mxs/mxs-builtin-pcm.c	2026-09-12 11:34:48.000000000 
++++ linux-6.6.143/sound/soc/mxs/mxs-builtin-pcm.c	2026-09-12 19:41:04.000000000 
+@@ -33,23 +33,27 @@
+ #define SND_DMAENGINE_PCM_FLAG_NO_RESIDUE BIT(31)
+ #endif
+ 
++#if !defined(MAX_XFER_BYTES)
++#define MAX_XFER_BYTES	0xff00
++#endif
++
+ static const struct snd_pcm_hardware snd_mxs_hardware = {
+-	.info			= SNDRV_PCM_INFO_MMAP |
+-				  SNDRV_PCM_INFO_MMAP_VALID |
+-				  SNDRV_PCM_INFO_PAUSE |
+-				  SNDRV_PCM_INFO_RESUME |
+-				  SNDRV_PCM_INFO_INTERLEAVED,
+-	.formats		= SNDRV_PCM_FMTBIT_S16_LE |
+-				  SNDRV_PCM_FMTBIT_S20_3LE |
+-				  SNDRV_PCM_FMTBIT_S24_LE,
++	.info				=	SNDRV_PCM_INFO_MMAP |
++							SNDRV_PCM_INFO_MMAP_VALID |
++							SNDRV_PCM_INFO_PAUSE |
++							SNDRV_PCM_INFO_RESUME |
++							SNDRV_PCM_INFO_INTERLEAVED,
++	.formats			=	SNDRV_PCM_FMTBIT_S16_LE |
++							SNDRV_PCM_FMTBIT_S32_LE,
++	.rates				=	SNDRV_PCM_RATE_8000_192000,
+ 	.channels_min		= 2,
+ 	.channels_max		= 2,
+-	.period_bytes_min	= 32,
+-	.period_bytes_max	= 8192,
+-	.periods_min		= 1,
+-	.periods_max		= 52,
+-	.buffer_bytes_max	= 64 * 1024,
+-	.fifo_size		= 32,
++	.period_bytes_min	=  4096,
++	.period_bytes_max	= MAX_XFER_BYTES/2,
++	.periods_min		= 2,
++	.periods_max		= 4,
++	.buffer_bytes_max	= MAX_XFER_BYTES,
++	.fifo_size			= 0,
+ };
+ 
+ static const struct snd_dmaengine_pcm_config mxs_dmaengine_pcm_config = {
+@@ -62,9 +66,9 @@
+ 	int ret = snd_dmaengine_pcm_register(dev, &mxs_dmaengine_pcm_config,
+ 		SND_DMAENGINE_PCM_FLAG_NO_RESIDUE);
+ 
+-    dev_info(dev, "Registered mxs-adc-pcm-driver\n");
++	dev_info(dev, "Registered mxs-adc-pcm-driver\n");
+ 
+-    return ret;
++	return ret;
+ }
+ EXPORT_SYMBOL_GPL(mxs_adc_pcm_platform_register);
+ 

@@ -1,0 +1,70 @@
+--- a/sound/soc/mxs/Makefile	2026-04-30 21:17:22.000000000 
++++ a/sound/soc/mxs/Makefile	2026-06-22 12:13:56.000000000 
+@@ -9,3 +9,10 @@
+ snd-soc-mxs-sgtl5000-objs := mxs-sgtl5000.o
+ 
+ obj-$(CONFIG_SND_SOC_MXS_SGTL5000) += snd-soc-mxs-sgtl5000.o
++
++# i.MX23 built-in audio Machine and Platform support
++snd-soc-mxs-builtin-pcm-objs := mxs-builtin-pcm.o
++snd-soc-mxs-builtin-dai-objs := mxs-builtin-dai.o
++
++obj-$(CONFIG_SND_MXS_SOC_BUILTIN) += snd-soc-mxs-builtin-pcm.o
++obj-$(CONFIG_SND_MXS_SOC_BUILTIN) += snd-soc-mxs-builtin-dai.o
+--- a/sound/soc/mxs/Kconfig	2026-04-30 21:17:22.000000000 
++++ a/sound/soc/mxs/Kconfig	2026-06-22 12:13:56.000000000 
+@@ -19,4 +19,13 @@
+ 	  Say Y if you want to add support for SoC audio on an MXS board with
+ 	  a sgtl5000 codec.
+ 
++config SND_MXS_SOC_BUILTIN
++	tristate "SoC Audio for Freescale i.MX23 built-in codec"
++	depends on ARCH_MXS
++	select SND_SOC_GENERIC_DMAENGINE_PCM
++	select SND_SOC_MXS_BUILTIN_CODEC
++	help
++	  Say Y or M if you want to add support for codecs attached to
++	  the MXS DAC interface.
++
+ endif	# SND_MXS_SOC
+--- a/sound/soc/codecs/Makefile	2026-04-30 21:17:22.000000000 
++++ a/sound/soc/codecs/Makefile	2026-06-22 12:13:56.000000000 
+@@ -372,6 +372,8 @@
+ snd-soc-wsa883x-objs := wsa883x.o
+ snd-soc-wsa884x-objs := wsa884x.o
+ snd-soc-zl38060-objs := zl38060.o
++snd-soc-mxs-builtin-codec-objs := mxs-builtin-codec.o
++
+ # Amp
+ snd-soc-max9877-objs := max9877.o
+ snd-soc-max98504-objs := max98504.o
+@@ -758,6 +760,7 @@
+ obj-$(CONFIG_SND_SOC_WSA883X)	+= snd-soc-wsa883x.o
+ obj-$(CONFIG_SND_SOC_WSA884X)	+= snd-soc-wsa884x.o
+ obj-$(CONFIG_SND_SOC_ZL38060)	+= snd-soc-zl38060.o
++obj-$(CONFIG_SND_SOC_MXS_BUILTIN_CODEC)	+= snd-soc-mxs-builtin-codec.o
+ 
+ # Amp
+ obj-$(CONFIG_SND_SOC_MAX9877)	+= snd-soc-max9877.o
+--- a/sound/soc/codecs/Kconfig	2026-04-30 21:17:22.000000000 
++++ a/sound/soc/codecs/Kconfig	2026-06-22 12:13:56.000000000 
+@@ -335,6 +335,7 @@
+ 	imply SND_SOC_WSA883X
+ 	imply SND_SOC_WSA884X
+ 	imply SND_SOC_ZL38060
++	imply SND_SOC_MXS_BUILTIN_CODEC
+ 	help
+ 	  Normally ASoC codec drivers are only built if a machine driver which
+ 	  uses them is also built since they are only usable with a machine
+@@ -345,6 +346,11 @@
+ 	  be selected separately.
+ 
+ 	  If unsure select "N".
++
++config SND_SOC_MXS_BUILTIN_CODEC
++	tristate
++	default y if SND_MXS_SOC_BUILTIN=y
++	default m if SND_MXS_SOC_BUILTIN=m
+ 
+ config SND_SOC_88PM860X
+ 	tristate
