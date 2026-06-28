@@ -1,0 +1,25 @@
+--- a/drivers/mtd/nand/raw/gpmi-nand/gpmi-nand.c	2026-06-19 23:39:44.000000000 
++++ a/drivers/mtd/nand/raw/gpmi-nand/gpmi-nand.c	2026-07-05 11:41:07.000000000 
+@@ -2636,19 +2636,19 @@
+ 			gpmi_dump_info(this);
+ 			ret = -ETIMEDOUT;
+ 			goto unmap;
+ 		}
+ 	}
+ 
++	ret = 0;
++
++unmap:
+ 	writel(BM_BCH_CTRL_COMPLETE_IRQ_EN,
+ 	       this->resources.bch_regs + HW_BCH_CTRL_CLR);
+ 	gpmi_clear_bch(this);
+ 
+-	ret = 0;
+-
+-unmap:
+ 	for (i = 0; i < this->ntransfers; i++) {
+ 		struct gpmi_transfer *transfer = &this->transfers[i];
+ 
+ 		if (transfer->direction != DMA_NONE)
+ 			dma_unmap_sg(this->dev, &transfer->sgl, 1,
+ 				     transfer->direction);
