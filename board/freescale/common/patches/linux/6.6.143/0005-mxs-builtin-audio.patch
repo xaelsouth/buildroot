@@ -1,0 +1,67 @@
+--- a/arch/arm/boot/dts/nxp/mxs/imx23-olinuxino.dts	2026-04-30 21:17:22.000000000 
++++ a/arch/arm/boot/dts/nxp/mxs/imx23-olinuxino.dts	2026-06-22 12:13:56.000000000 
+@@ -8,6 +8,7 @@
+ /dts-v1/;
+ #include <dt-bindings/gpio/gpio.h>
+ #include "imx23.dtsi"
++#include "imx23-audio.dtsi"
+ 
+ / {
+ 	model = "i.MX23 Olinuxino Low Cost Board";
+--- a/arch/arm/boot/dts/nxp/mxs/imx23-evk.dts	2026-04-30 21:17:22.000000000 
++++ a/arch/arm/boot/dts/nxp/mxs/imx23-evk.dts	2026-06-22 12:30:27.000000000 
+@@ -3,7 +3,9 @@
+ // Copyright 2012 Freescale Semiconductor, Inc.
+ 
+ /dts-v1/;
++#include <dt-bindings/gpio/gpio.h>
+ #include "imx23.dtsi"
++#include "imx23-audio.dtsi"
+ 
+ / {
+ 	model = "Freescale i.MX23 Evaluation Kit";
+--- 
++++ a/arch/arm/boot/dts/nxp/mxs/imx23-audio.dtsi	2026-06-22 12:34:47.000000000 
+@@ -0,0 +1,42 @@
++// SPDX-License-Identifier: GPL-2.0+
++//
++// Author: Michal Ulianko <michal.ulianko@gmail.com>
++
++// DTS for i.MX233 built-in codec ALSA Soc Audio driver
++
++/ {
++	codec_dai: mxs-builtin-codec {
++		#sound-dai-cells = <0>;
++		compatible = "fsl,mxs-builtin-codec";
++		reg = <0x80048000 0x2000>, <0x8004c000 0x2000>;
++		reg-names = "audioout", "audioin";
++		clocks = <&clks 31>;
++		clock-names = "filt";
++	};
++
++	cpu_dai: mxs-builtin-cpu-dai {
++		#sound-dai-cells = <0>;
++		compatible = "fsl,mxs-builtin-cpu-dai";
++		reg = <0x80048000 0x2000>, <0x8004c000 0x2000>;
++		reg-names = "audioout", "audioin";
++		interrupts = <8 6 4>;
++		dmas = <&dma_apbx 0>, <&dma_apbx 1>;
++		dma-names = "rx", "tx";
++	};
++
++	sound-mxs-builtin-audio {
++		compatible = "simple-audio-card";
++		simple-audio-card,name = "mxs-builtin-audio";
++		simple-audio-card,format = "left_j";
++		simple-audio-card,bitclock-master = <&sndcodec>;
++		simple-audio-card,frame-master = <&sndcodec>;
++
++		sndcpu: simple-audio-card,cpu {
++			sound-dai = <&cpu_dai>;
++		};
++
++		sndcodec: simple-audio-card,codec {
++			sound-dai = <&codec_dai>;
++		};
++	};
++};
