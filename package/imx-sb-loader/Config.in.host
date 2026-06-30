@@ -1,0 +1,5 @@
+config BR2_PACKAGE_HOST_IMX_SB_LOADER
+	bool "host-imx-sb-loader"
+	help
+		iMX SB Loader is a tool to download binary image files (like U-Boot.sb)
+		to be used with CPUs imx23, imx28, stp37xx. It is using USB protocol.
