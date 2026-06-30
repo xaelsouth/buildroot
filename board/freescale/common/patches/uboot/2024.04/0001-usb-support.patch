@@ -1,0 +1,10 @@
+--- uboot-2024.04/drivers/usb/host/ehci-mxs.c	2024-04-02 22:58:58.000000000 
++++ uboot-2024.04/drivers/usb/host/ehci-mxs.c	2026-06-22 10:17:26.000000000 
+@@ -276,6 +276,7 @@
+ }
+ 
+ static const struct udevice_id mxs_usb_ids[] = {
++	{ .compatible = "fsl,imx23-usb" },
+ 	{ .compatible = "fsl,imx28-usb" },
+ 	{ }
+ };
