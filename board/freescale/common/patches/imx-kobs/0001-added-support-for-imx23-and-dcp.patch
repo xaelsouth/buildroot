@@ -1,0 +1,645 @@
+diff -Naur a/src/bootstream.c a/src/bootstream.c
+--- a/src/bootstream.c	2023-03-15 04:10:55.000000000 +1300
++++ a/src/bootstream.c	2026-07-03 01:35:38.000000000 +1200
+@@ -42,8 +42,9 @@
+ #include <sys/stat.h>
+ #include <fcntl.h>
+ #include <unistd.h>
+-#include <sys/ioctl.h>
+-#include "dcp_bootstream_ioctl.h"
++#include <sys/socket.h>
++#include <linux/if_alg.h>
++#include <linux/socket.h>
+ 
+ /*********************************/
+ 
+@@ -90,13 +91,21 @@
+ 	char c1, c0;
+ 	uint8_t v1, v0;
+ 	uint8_t *vec_start = vec;
++	const char *txt_start = txt;
+ 
+-	while (isspace(*txt))
++	while (isspace(*txt) || *txt == '\0')
+ 		txt++;
+ 
+-	if (strlen(txt) < 16 * 2)
++	txt_start = txt;
++
++	while (!isspace(*txt) && *txt != '\0')
++		txt++;
++
++	if (txt - txt_start != 32)
+ 		return NULL;
+ 
++	txt = txt_start;
++
+ 	for (i = 0; i < 16; i++) {
+ 		c1 = *txt++;
+ 		if (!isxdigit(c1))
+@@ -122,70 +131,82 @@
+ 
+ /*********************************/
+ 
+-static int dcpboot_open(void)
+-{
+-	FILE *fp;
+-	static char line[BUFSIZ];
+-	char name[30];
+-	int r, len, major = 10, minor = -1;	/* 10 is the MISC devices major */
+-	char *s;
+-	int fd;
+-
+-	/* open /proc/misc */
+-	fp = fopen("/proc/misc", "r");
+-	if (fp == NULL) {
+-		printf("Error opening /proc/misc\n");
+-		exit(5);
+-	}
+-
+-	/* find dcpboot line */
+-	while (fgets(line, sizeof(line) - 1, fp) != NULL) {
+-		len = strlen(line);
+-		if (len > 0 && (line[len-1] == '\r' || line[len-1] == '\n'))
+-			line[--len] = '\0';
+-		if (strstr(line,"dcpboot") == 0)
+-			continue;
+-		s = line;
+-		while (isspace(*s))
+-			s++;
+-		minor = atoi(s);
+-		if (minor < 0 || minor > 255) {
+-			printf("wrong format of /proc/misc file\n");
+-			exit(5);
+-		}
+-	}
+-	fclose(fp);
+-
+-	if (minor < 0) {
+-		printf("dcpboot not found in /proc/misc\n");
+-		exit(5);
++#if defined(DBS_ENC)
++#undef DBS_ENC
++#endif
++#define DBS_ENC	0x00
++
++#if defined(DBS_DEC)
++#undef DBS_DEC
++#endif
++#define DBS_DEC 0x01
++
++#if defined(__arm__)
++#define ALG_NAME "cbc-paes-dcp"
++static const uint8_t key[1] = {
++	// Stands for OTP crypto key usage.
++	// See DCP_PAES_KEY_OTP in include/soc/fsl/dcp.h.
++	0xFF
++};
++
++#else
++// Helpful when using for debugging with NAND simulator.
++#define ALG_NAME "cbc-aes-aesni"
++static const uint8_t key[16] = {
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
++};
++#endif
++
++#define IV_LEN 16
++
++static int dcpboot_ioctl(int fd, int op, const uint8_t *mac) {
++	uint8_t cmsg_buf[CMSG_SPACE(sizeof(uint32_t)) + CMSG_SPACE(sizeof(struct af_alg_iv) + IV_LEN)] = { 0 };
++
++	struct msghdr msg = {
++		.msg_control = cmsg_buf,
++		.msg_controllen = sizeof(cmsg_buf)
++	};
++
++	struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
++	cmsg->cmsg_len = CMSG_LEN(sizeof(uint32_t));
++	cmsg->cmsg_level = SOL_ALG;
++	cmsg->cmsg_type = ALG_SET_OP;
++	*((uint32_t *)CMSG_DATA(cmsg)) = (op == DBS_ENC) ? ALG_OP_ENCRYPT : ALG_OP_DECRYPT;
++
++	cmsg = CMSG_NXTHDR(&msg, cmsg);
++	cmsg->cmsg_len = CMSG_LEN(sizeof(struct af_alg_iv) + IV_LEN);
++	cmsg->cmsg_level = SOL_ALG;
++	cmsg->cmsg_type = ALG_SET_IV;
++	((struct af_alg_iv *)CMSG_DATA(cmsg))->ivlen = IV_LEN;
++	memcpy(((struct af_alg_iv *)CMSG_DATA(cmsg))->iv, mac, IV_LEN);
++
++	return sendmsg(fd, &msg, 0);
++}
++
++static int dcpboot_open(void) {
++	struct sockaddr_alg sa = {
++		.salg_family = AF_ALG,
++		.salg_type = "skcipher",
++		.salg_name = ALG_NAME
++	};
++
++	int sockfd = socket(AF_ALG, SOCK_SEQPACKET, 0);
++	if (-1 == sockfd) {
++		fprintf(stderr, "socket failed (%s)\n", strerror(errno));
++		exit(EXIT_FAILURE);
++	}
++
++	if (-1 == bind(sockfd, (struct sockaddr *)&sa, sizeof(sa))) {
++		fprintf(stderr, "bind failed (%s)\n", strerror(errno));
++		exit(EXIT_FAILURE);
++	}
++
++	if (-1 == setsockopt(sockfd, SOL_ALG, ALG_SET_KEY, key, sizeof(key))) {
++		fprintf(stderr, "setsockopt failed (%s)\n", strerror(errno));
++		exit(EXIT_FAILURE);
+ 	}
+ 
+-	strncpy(name, "/tmp/dcpboot-######", sizeof(name));
+-	s = name;
+-	while (*s) {
+-		if (*s == '#')
+-			*s = '0' + (rand() % 10);
+-		s++;
+-	}
+-
+-	/* printf("major = %d, minor = %d, name = %s\n", major, minor, name); */
+-
+-	/* remove just in case */
+-	(void)unlink(name);
+-
+-	/* create the special character device file */
+-	r = mknod(name, S_IFCHR | 0600, (major << 8) | minor);
+-	if (r == -1)
+-		return -1;
+-
+-	fd = open(name, O_RDWR);
+-	/* we'll return this anyway */
+-
+-	/* no need for the character device file any more, rm it */
+-	unlink(name);
+-
+-	return fd;
++	int fd = accept(sockfd, NULL, 0); close(sockfd); return fd;
+ }
+ 
+ static void dcpboot_cbc_encrypt_update(int fd, uint8_t *mac,
+@@ -197,12 +218,15 @@
+ 	blkcnt = size / 16;
+ 
+ 	while (blkcnt-- > 0) {
+-		for (i = 0; i < 16; i++)
+-			mac[i] ^= in[i];
++		memcpy(mac, in, 16);
+ 
+-		r = ioctl(fd, DBS_ENC, mac);
+-		if (r != 0) {
+-			fprintf(stderr, "ioctl failed (%s)\n", strerror(errno));
++		if (16 != write(fd, mac, 16)) {
++			fprintf(stderr, "write failed (%s)\n", strerror(errno));
++			exit(5);
++		}
++
++		if (16 != read(fd, mac, 16)) {
++			fprintf(stderr, "read failed (%s)\n", strerror(errno));
+ 			exit(5);
+ 		}
+ 
+@@ -225,13 +249,17 @@
+ 
+ 	while (blkcnt-- > 0) {
+ 		memcpy(buf, in, 16);
+-		r = ioctl(fd, DBS_DEC, buf);
+-		if (r != 0) {
+-			fprintf(stderr, "ioctl failed (%s)\n", strerror(errno));
++
++		if (16 != write(fd, buf, 16)) {
++			fprintf(stderr, "write failed (%s)\n", strerror(errno));
+ 			exit(5);
+ 		}
+-		for (i = 0; i < 16; i++)
+-			buf[i] ^= mac[i];
++
++		if (16 != read(fd, buf, 16)) {
++			fprintf(stderr, "read failed (%s)\n", strerror(errno));
++			exit(5);
++		}
++
+ 		memcpy(mac, in, 16);
+ 		in += 16;
+ 		if (out) {
+@@ -544,6 +572,11 @@
+ 			}
+ 
+ 			memset(mac, 0, 16);
++			int r = dcpboot_ioctl(dcp_fd, DBS_ENC, mac);
++			if (r != 0) {
++				fprintf(stderr, "ioctl failed (%s)\n", strerror(errno));
++				goto err;
++			}
+ 			dcpboot_cbc_encrypt_update(dcp_fd, mac, (uint8_t *)&bih, NULL, sizeof(bih));
+ 		} else {
+ 
+@@ -599,6 +632,11 @@
+ 
+ 			if (key == NULL) {
+ 				memcpy(mac, bih.m_digest, 16);
++				int r = dcpboot_ioctl(dcp_fd, DBS_DEC, mac);
++				if (r != 0) {
++					fprintf(stderr, "ioctl failed (%s)\n", strerror(errno));
++					goto err;
++				}
+ 				dcpboot_cbc_decrypt_update(dcp_fd, mac, dde.m_dek, session_key, 16);
+ 			} else {
+ 				aes128_cbc_decrypt_init(&cxd, mac, key, bih.m_digest);
+diff -Naur a/src/main.c a/src/main.c
+--- a/src/main.c	2023-03-15 04:10:55.000000000 +1300
++++ a/src/main.c	2026-07-03 01:35:45.000000000 +1200
+@@ -169,7 +169,7 @@
+ 
+ int extract_main(int argc, char **argv)
+ {
+-	int i, j, r;
++	int i, r;
+ 	struct mtd_data *md;
+ 	int flags, image;
+ 	int startpage, size;
+@@ -201,7 +201,6 @@
+ 
+ 	image = 0;	/* first image */
+ 	flags = 0;
+-	j = 0;
+ 	for (i = 1; i < argc; i++) {
+ 
+ 		if (argv[i][0] != '-') {
+@@ -292,8 +291,10 @@
+ 			exit(5);
+ 		}
+ 		r = fwrite(buf, sizeof(buf), 1, outfp);
+-		if (sizeof(buf) != 1)
++		if (r != 1) {
+ 			fprintf(stderr, "Write to file failed\n");
++			exit(5);
++		}
+ 
+ 		start += sizeof(buf);
+ 		size -= sizeof(buf);
+@@ -345,9 +346,11 @@
+ 				fprintf(stderr, "ERROR: unable to read tmp file\n");
+ 				exit(5);
+ 			}
+-			r = fwrite(buf, 1, chunk, tfp);
+-			if (sizeof(buf) != chunk)
++			r = fwrite(buf, chunk, 1, tfp);
++			if (r != 1) {
+ 				fprintf(stderr, "Write to file failed\n");
++				exit(5);
++			}
+ 
+ 			curr += chunk;
+ 		}
+@@ -373,9 +376,11 @@
+ 				fprintf(stderr, "ERROR: unable to read tmp file\n");
+ 				exit(5);
+ 			}
+-			r = fwrite(buf, 1, chunk, outfp);
+-			if (sizeof(buf) != chunk)
++			r = fwrite(buf, chunk, 1, outfp);
++			if (r != 1) {
+ 				fprintf(stderr, "Write to file failed\n");
++				exit(5);
++			}
+ 			curr += chunk;
+ 		}
+ 
+@@ -444,7 +449,7 @@
+ 
+ int update_main(int argc, char **argv)
+ {
+-	int i, j, r;
++	int i, r;
+ 	struct mtd_data *md;
+ 	int flags;
+ 	unsigned int image_mask;
+@@ -470,7 +475,6 @@
+ 
+ 	image_mask = 0;	/* no image */
+ 	flags = 0;
+-	j = 0;
+ 	for (i = 1; i < argc; i++) {
+ 
+ 		if (argv[i][0] != '-') {
+@@ -587,7 +591,7 @@
+ 
+ int init_main(int argc, char **argv)
+ {
+-	int i, j, r;
++	int i, r;
+ 	struct mtd_data *md;
+ 	int flags, image;
+ 	char *infile = NULL;
+@@ -617,7 +621,6 @@
+ 	image = 0;	/* first image */
+ 	flags = 0;
+ 	dryrun = 0;
+-	j = 0;
+ 	for (i = 1; i < argc; i++) {
+ 
+ 		if (argv[i][0] != '-') {
+@@ -754,7 +757,7 @@
+ 
+ int imgverify_main(int argc, char **argv)
+ {
+-	int i, j;
++	int i;
+ 	int flags;
+ 	char *infile = NULL;
+ 	FILE *infp;
+@@ -770,7 +773,6 @@
+ 	device_key = 0;
+ 
+ 	flags = 0;
+-	j = 0;
+ 	for (i = 1; i < argc; i++) {
+ 
+ 		if (argv[i][0] != '-') {
+diff -Naur a/src/mtd.c a/src/mtd.c
+--- a/src/mtd.c	2026-07-03 01:22:30.761000000 +1200
++++ a/src/mtd.c	2026-07-03 01:35:52.000000000 +1200
+@@ -318,6 +318,15 @@
+ 	size = mtd_writesize(md);
+ 
+ 	do {
++		struct mtd_oob_buf ops;
++		ops.start = ofs;
++		ops.length = mtd_oobsize(md);
++		ops.ptr = oobdata;
++
++		r = ioctl(md->part[chip].fd, MEMREADOOB, &ops);
++	} while (r == -1 && (errno == EAGAIN || errno == EBUSY));
++
++	do {
+ 		r = pread(md->part[chip].fd, data, size, ofs);
+ 	} while (r == -1 && (errno == EAGAIN || errno == EBUSY));
+ 
+@@ -334,7 +343,7 @@
+ 		/* swap first */
+ 		swap_bad_block_mark(data, oobdata, nfc_geo, 0);
+ 		memcpy(md->buf, oobdata, nfc_geo->metadata_size_in_bytes);
+-		dst_bit_off += nfc_geo->metadata_size_in_bytes;
++		dst_bit_off = nfc_geo->metadata_size_in_bytes * 8;
+ 		oob_bit_off = dst_bit_off;
+ 		ecc_chunk_count = nfc_geo->ecc_chunk_count;
+ 
+@@ -457,7 +466,7 @@
+ 
+ 		/* copy meta first */
+ 		memcpy(oobdata, md->buf, nfc_geo->metadata_size_in_bytes);
+-		src_bit_off += nfc_geo->metadata_size_in_bytes * 8;
++		src_bit_off = nfc_geo->metadata_size_in_bytes * 8;
+ 		oob_bit_off = src_bit_off;
+ 		ecc_chunk_count = nfc_geo->ecc_chunk_count;
+ 
+@@ -697,9 +706,15 @@
+ 	 *  physical block mark within the ECC-based view of the page:
+ 	 *          (page_size - D) * 8
+ 	 */
+-	block_mark_bit_offset = mtd->writesize * 8 -
+-		(geo->ecc_strength * geo->gf_len * (geo->ecc_chunk_count - 1)
+-				+ geo->metadata_size_in_bytes * 8);
++	if (plat_config_data->m_swap_block_mark) {
++		block_mark_bit_offset = mtd->writesize * 8 -
++			(geo->ecc_strength * geo->gf_len * (geo->ecc_chunk_count - 1)
++					+ geo->metadata_size_in_bytes * 8);
++
++	}
++	else { /* Value does not matter since we don't swap bytes, just initialize it. */
++		block_mark_bit_offset = 0;
++	}
+ 
+ 	geo->block_mark_byte_offset = block_mark_bit_offset / 8;
+ 	geo->block_mark_bit_offset  = block_mark_bit_offset % 8;
+@@ -1367,6 +1382,9 @@
+  *         to save/restore is meta[0]
+  */
+ 
++	if (!plat_config_data->m_swap_block_mark)
++    return;
++
+ 	int byte_off = nfc_geo->block_mark_byte_offset;
+ 	int bit_off = nfc_geo->block_mark_bit_offset;
+ 	uint8_t *data_off = data;
+@@ -2467,7 +2485,7 @@
+ 	}
+ 	if (md->bbtn[1] != NULL) {
+ 		free(md->bbtn[1]);
+-		md->bbtn[0] = NULL;
++		md->bbtn[1] = NULL;
+ 	}
+ 
+ 	memset(ncb, 0, sizeof(*ncb));
+@@ -2490,11 +2508,10 @@
+ 		ncb->NCB_Block1.m_u32SectorToPageShift        = 0;
+ 		ncb->NCB_Block2.m_u32ECCType                  = BCH_Ecc_8bit;
+ 		ncb->NCB_Block2.m_u32EccBlock0EccLevel        = BCH_Ecc_8bit;
+-                ncb->NCB_Block2.m_u32EccBlock0Size            = 512;
+-                ncb->NCB_Block2.m_u32EccBlockNSize            = 512;
+-                ncb->NCB_Block2.m_u32NumEccBlocksPerPage      = mtd_writesize(md) / 512 - 1;
+-                ncb->NCB_Block2.m_u32MetadataBytes            = 10;
+-
++		ncb->NCB_Block2.m_u32EccBlock0Size            = 512;
++		ncb->NCB_Block2.m_u32EccBlockNSize            = 512;
++		ncb->NCB_Block2.m_u32NumEccBlocksPerPage      = mtd_writesize(md) / 512 - 1;
++		ncb->NCB_Block2.m_u32MetadataBytes            = 10;
+ 	} else if (mtd_writesize(md) == 4096) {
+ 		ncb->NCB_Block1.m_u32SectorsPerBlock          = (mtd_erasesize(md) / mtd_writesize(md)) * 2;
+ 		ncb->NCB_Block1.m_u32SectorInPageMask         = 1;
+@@ -2506,12 +2523,38 @@
+ 		if (mtd_oobsize(md) == 218 || mtd_oobsize(md) == 224) {
+ 			ncb->NCB_Block2.m_u32ECCType           = BCH_Ecc_16bit;
+ 			ncb->NCB_Block2.m_u32EccBlock0EccLevel = BCH_Ecc_16bit;
+-		}  else if ((mtd_oobsize(md) == 128)){
++		} else if ((mtd_oobsize(md) == 128)) {
+ 			ncb->NCB_Block2.m_u32ECCType           = BCH_Ecc_8bit;
+-                        ncb->NCB_Block2.m_u32EccBlock0EccLevel = BCH_Ecc_8bit;
++			ncb->NCB_Block2.m_u32EccBlock0EccLevel = BCH_Ecc_8bit;
++		} else {
++			fprintf(stderr, "Illegal oob size %d\n", mtd_oobsize(md));
++			return -1;
++		}
++	} else if (mtd_writesize(md) == 8192) {
++		// https://community.nxp.com/t5/i-MX-Processors/how-to-config-imx233-work-with-8k-page-nand-flash-hynix/m-p/218944?profile.language=zh-CN
++		ncb->NCB_Block1.m_u32SectorsPerBlock          = (mtd_erasesize(md) / mtd_writesize(md)) * 4;
++		ncb->NCB_Block1.m_u32SectorInPageMask         = 3;
++		ncb->NCB_Block1.m_u32SectorToPageShift        = 2;
++		ncb->NCB_Block2.m_u32EccBlock0Size            = 512;
++		ncb->NCB_Block2.m_u32EccBlockNSize       = 512;
++		ncb->NCB_Block2.m_u32NumEccBlocksPerPage      = (mtd_writesize(md) / 512) - 1;
++		ncb->NCB_Block2.m_u32MetadataBytes            = 10;
++		if (mtd_oobsize(md) == 512) {
++			ncb->NCB_Block2.m_u32ECCType           = BCH_Ecc_20bit;
++			ncb->NCB_Block2.m_u32EccBlock0EccLevel = BCH_Ecc_20bit;
++		} else if ((mtd_oobsize(md) == 448)) {
++			ncb->NCB_Block2.m_u32ECCType           = BCH_Ecc_16bit;
++			ncb->NCB_Block2.m_u32EccBlock0EccLevel = BCH_Ecc_16bit;
++		} else if ((mtd_oobsize(md) == 376)) {
++			ncb->NCB_Block2.m_u32ECCType           = BCH_Ecc_12bit;
++			ncb->NCB_Block2.m_u32EccBlock0EccLevel = BCH_Ecc_12bit;
++		} else {
++			fprintf(stderr, "Illegal oob size %d\n", mtd_oobsize(md));
++			return -1;
+ 		}
+ 	} else {
+ 		fprintf(stderr, "Illegal page size %d\n", mtd_writesize(md));
++		return -1;
+ 	}
+ 
+ 	ncb->NCB_Block1.m_u32NumberOfNANDs            = 1;
+@@ -2927,7 +2970,7 @@
+ 
+ 		stride_size_in_bytes        = cfg->stride_size_in_bytes;
+ 		search_area_size_in_bytes   = cfg->search_area_size_in_bytes;
+-		search_area_size_in_strides = 1 << md->cfg.search_exponent;
++		search_area_size_in_strides = search_area_size_in_bytes / stride_size_in_bytes;
+ 		count = 2; //write two copy on mx23/28
+ 	}
+ 
+diff -Naur a/src/plat_boot_config.c a/src/plat_boot_config.c
+--- a/src/plat_boot_config.c	2023-03-15 04:10:55.000000000 +1300
++++ a/src/plat_boot_config.c	2026-07-03 01:36:01.000000000 +1200
+@@ -26,7 +26,7 @@
+ #include "plat_boot_config.h"
+ 
+ /* System version */
+-platform_config *plat_config_data;
++platform_config *plat_config_data = NULL;
+ 
+ static platform_config mx23_boot_config = {
+ 	.m_u32RomVer = ROM_Version_0,
+@@ -38,6 +38,7 @@
+ 	.m_u32UseSinglePageStride = 0,
+ 	.m_u32DBBT_FingerPrint = DBBT_FINGERPRINT2,
+ 	.m_u32MaxEccStrength = 20,
++	.m_swap_block_mark = 0,
+ 	.rom_mtd_init = v0_rom_mtd_init,
+ 	.rom_mtd_commit_structures = v0_rom_mtd_commit_structures,
+ };
+@@ -52,6 +53,7 @@
+ 	.m_u32UseSinglePageStride = 1,
+ 	.m_u32DBBT_FingerPrint = DBBT_FINGERPRINT2,
+ 	.m_u32MaxEccStrength = 20,
++	.m_swap_block_mark = 1,
+ 	.rom_mtd_init = v1_rom_mtd_init,
+ 	.rom_mtd_commit_structures = v1_rom_mtd_commit_structures,
+ };
+@@ -66,6 +68,7 @@
+ 	.m_u32UseSinglePageStride = 0,
+ 	.m_u32DBBT_FingerPrint = DBBT_FINGERPRINT2_V2,
+ 	.m_u32MaxEccStrength = 40,
++	.m_swap_block_mark = 1,
+ 	.rom_mtd_init = v2_rom_mtd_init,
+ 	.rom_mtd_commit_structures = v2_rom_mtd_commit_structures,
+ };
+@@ -80,6 +83,7 @@
+ 	.m_u32UseSinglePageStride = 0,
+ 	.m_u32DBBT_FingerPrint = DBBT_FINGERPRINT2_V2,
+ 	.m_u32MaxEccStrength = 40,
++	.m_swap_block_mark = 1,
+ 	.rom_mtd_init = v2_rom_mtd_init,
+ 	.rom_mtd_commit_structures = v2_rom_mtd_commit_structures,
+ };
+@@ -94,6 +98,7 @@
+ 	.m_u32UseSinglePageStride = 0,
+ 	.m_u32DBBT_FingerPrint = DBBT_FINGERPRINT2,
+ 	.m_u32MaxEccStrength = 40,
++	.m_swap_block_mark = 1,
+ 	.rom_mtd_init = v4_rom_mtd_init,
+ 	.rom_mtd_commit_structures = v4_rom_mtd_commit_structures,
+ };
+@@ -107,6 +112,7 @@
+ 	.m_u32UseSinglePageStride = 0,
+ 	.m_u32DBBT_FingerPrint = DBBT_FINGERPRINT2,
+ 	.m_u32MaxEccStrength = 40,
++	.m_swap_block_mark = 1,
+ 	.rom_mtd_init = v4_rom_mtd_init,
+ 	.rom_mtd_commit_structures = v4_rom_mtd_commit_structures,
+ };
+@@ -120,6 +126,7 @@
+ 	.m_u32UseSinglePageStride = 0,
+ 	.m_u32DBBT_FingerPrint = DBBT_FINGERPRINT2,
+ 	.m_u32MaxEccStrength = 62,
++	.m_swap_block_mark = 1,
+ 	.rom_mtd_init = v4_rom_mtd_init,
+ 	.rom_mtd_commit_structures = v4_rom_mtd_commit_structures,
+ };
+@@ -133,6 +140,7 @@
+ 	.m_u32UseSinglePageStride = 0,
+ 	.m_u32DBBT_FingerPrint = DBBT_FINGERPRINT2,
+ 	.m_u32MaxEccStrength = 62,
++	.m_swap_block_mark = 1,
+ 	.rom_mtd_init = v4_rom_mtd_init,
+ 	.rom_mtd_commit_structures = v5_rom_mtd_commit_structures,
+ };
+@@ -146,6 +154,7 @@
+ 	.m_u32UseSinglePageStride = 0,
+ 	.m_u32DBBT_FingerPrint = DBBT_FINGERPRINT2,
+ 	.m_u32MaxEccStrength = 62,
++	.m_swap_block_mark = 1,
+ 	.rom_mtd_init = v4_rom_mtd_init,
+ 	.rom_mtd_commit_structures = v5_rom_mtd_commit_structures,
+ };
+@@ -159,6 +168,7 @@
+ 	.m_u32UseSinglePageStride = 0,
+ 	.m_u32DBBT_FingerPrint = DBBT_FINGERPRINT2,
+ 	.m_u32MaxEccStrength = 40,
++	.m_swap_block_mark = 1,
+ 	.rom_mtd_init = v4_rom_mtd_init,
+ 	.rom_mtd_commit_structures = v6_rom_mtd_commit_structures,
+ };
+@@ -172,6 +182,7 @@
+ 	.m_u32UseSinglePageStride = 0,
+ 	.m_u32DBBT_FingerPrint = DBBT_FINGERPRINT2,
+ 	.m_u32MaxEccStrength = 62,
++	.m_swap_block_mark = 1,
+ 	.rom_mtd_init = v4_rom_mtd_init,
+ 	.rom_mtd_commit_structures = v7_rom_mtd_commit_structures,
+ };
+@@ -185,6 +196,7 @@
+ 	.m_u32UseSinglePageStride = 0,
+ 	.m_u32DBBT_FingerPrint = DBBT_FINGERPRINT2,
+ 	.m_u32MaxEccStrength = 62,
++	.m_swap_block_mark = 1,
+ 	.rom_mtd_init = v4_rom_mtd_init,
+ 	.rom_mtd_commit_structures = v5_rom_mtd_commit_structures,
+ };
+@@ -197,6 +209,8 @@
+ 	char         line_buffer[100];
+ 	static char  *banner = "Revision";
+ 	static char  *banner_hw = "Hardware";
++	static char  *plat_imx23 = "i.MX23";
++ 	static char  *plat_imx28 = "i.MX28";
+ 	static char  *plat_imx6sx = "i.MX6SX";
+ 	static char  *plat_imx6ul = "i.MX6UL";
+ 	static char  *plat_imx6ull = "i.MX6ULL";
+@@ -238,6 +252,12 @@
+ 			plat_config_data = &mx8q_boot_config;
+ 			plat_config_data->m_u32Arm_type = MX8MP;
+ 			return 0;
++		} else if (!strncmp(line_buffer, plat_imx23, strlen(plat_imx23))) {
++			plat_config_data = &mx23_boot_config;
++			return 0;
++		} else if (!strncmp(line_buffer, plat_imx28, strlen(plat_imx28))) {
++			plat_config_data = &mx28_boot_config;
++			return 0;
+ 		}
+ 
+ 		memset(line_buffer, 0, sizeof(line_buffer));
+diff -Naur a/src/plat_boot_config.h a/src/plat_boot_config.h
+--- a/src/plat_boot_config.h	2023-03-15 04:10:55.000000000 +1300
++++ a/src/plat_boot_config.h	2026-07-03 01:36:05.000000000 +1200
+@@ -62,6 +62,7 @@
+ 	uint32_t m_u32Arm_type;
+ 	uint32_t m_u32DBBT_FingerPrint;
+ 	uint32_t m_u32MaxEccStrength;
++	uint32_t m_swap_block_mark;
+ 	int (* rom_mtd_init)(struct mtd_data *md, FILE *fp);
+ 	int (* rom_mtd_commit_structures)(struct mtd_data *md, FILE *fp, int flags);
+ } platform_config;
