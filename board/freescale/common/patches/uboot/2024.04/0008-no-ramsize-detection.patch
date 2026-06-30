@@ -1,0 +1,62 @@
+--- a/arch/arm/cpu/arm926ejs/mxs/spl_boot.c	2024-04-02 22:58:58.000000000 
++++ a/arch/arm/cpu/arm926ejs/mxs/spl_boot.c	2026-06-28 00:43:20.000000000 
+@@ -95,24 +95,26 @@
+ }
+ 
+ static noinline
+ __attribute__((target("arm")))
+ void mxs_spl_fixup_vectors(void)
+ {
++#if !defined(CONFIG_MX23)
+ 	/*
+ 	 * Copy our vector table to 0x0, since due to HAB, we cannot
+ 	 * be loaded to 0x0. We want to have working vectoring though,
+ 	 * thus this fixup. Our vectoring table is PIC, so copying is
+ 	 * fine.
+ 	 */
+ 
+ 	/* cppcheck-suppress nullPointer */
+ 	memcpy(0x0, _start, 0x60);
+ 
+ 	/* Make sure ARM core points to low vectors */
+ 	set_cr(get_cr() & ~CR_V);
++#endif
+ }
+ 
+ static void mxs_spl_console_init(void)
+ {
+ #ifdef CONFIG_SPL_SERIAL
+ 	gd->bd = &bdata;
+
+--- a/arch/arm/cpu/arm926ejs/mxs/spl_mem_init.c	2024-04-02 22:58:58.000000000 
++++ a/arch/arm/cpu/arm926ejs/mxs/spl_mem_init.c	2026-06-28 00:49:08.000000000 
+@@ -227,12 +227,15 @@
+ 		POWER_VDDACTRL_LINREG_OFFSET_1STEPS_BELOW,
+ 		&power_regs->hw_power_vddactrl);
+ }
+ 
+ uint32_t mxs_mem_get_size(void)
+ {
++#ifdef CONFIG_MX23
++	return PHYS_SDRAM_1_SIZE;
++#else
+ 	uint32_t sz, da;
+ 	uint32_t *vt = (uint32_t *)0x20;
+ 	/* The following is "subs pc, r14, #4", used as return from DABT. */
+ 	const uint32_t data_abort_memdetect_handler = 0xe25ef004;
+ 
+ 	/* Replace the DABT handler. */
+@@ -242,12 +245,13 @@
+ 	sz = get_ram_size((long *)PHYS_SDRAM_1, PHYS_SDRAM_1_SIZE);
+ 
+ 	/* Restore the old DABT handler. */
+ 	vt[4] = da;
+ 
+ 	return sz;
++#endif
+ }
+ 
+ #ifdef CONFIG_MX23
+ static void mx23_mem_setup_vddmem(void)
+ {
+ 	struct mxs_power_regs *power_regs =
