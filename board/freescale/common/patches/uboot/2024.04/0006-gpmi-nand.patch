@@ -1,0 +1,347 @@
+--- a/drivers/mtd/nand/raw/mxs_nand.c	2024-04-02 22:58:58.000000000 
++++ a/drivers/mtd/nand/raw/mxs_nand.c	2026-08-09 19:13:18.000000000 
+@@ -10,13 +10,12 @@
+  *
+  * Copyright (C) 2010 Freescale Semiconductor, Inc.
+  * Copyright (C) 2008 Embedded Alley Solutions, Inc.
+  * Copyright 2017-2019 NXP
+  */
+ 
+-#include <common.h>
+ #include <clk.h>
+ #include <cpu_func.h>
+ #include <dm.h>
+ #include <dm/device_compat.h>
+ #include <malloc.h>
+ #include <mxs_nand.h>
+@@ -54,12 +53,21 @@
+ 
+ #define	MXS_NAND_BCH_TIMEOUT			10000
+ 
+ #define TO_CYCLES(duration, period) DIV_ROUND_UP_ULL(duration, period)
+ 
+ struct nand_ecclayout fake_ecc_layout;
++
++static inline bool GPMI_IS_MXS(void)
++{
++#if defined(CONFIG_MX23) || defined(CONFIG_MX28)
++	return true;
++#else
++	return false;
++#endif
++}
+ 
+ /*
+  * Cache management functions
+  */
+ #if !CONFIG_IS_ENABLED(SYS_DCACHE_OFF)
+ static void mxs_nand_flush_data_buf(struct mxs_nand_info *info)
+@@ -275,13 +283,12 @@
+ 	geo->ecc_chunk_count = mtd->writesize / geo->ecc_chunkn_size;
+ 	max_ecc = ((mtd->oobsize - MXS_NAND_METADATA_SIZE) * 8)
+ 			/ (geo->gf_len * geo->ecc_chunk_count);
+ 	max_ecc = min(round_down(max_ecc, 2),
+ 				nand_info->max_ecc_strength_supported);
+ 
+-
+ 	/* search a supported ecc strength that makes bbm */
+ 	/* located in data chunk  */
+ 	geo->ecc_strength = chip->ecc_strength_ds;
+ 	while (!(geo->ecc_strength > max_ecc)) {
+ 		if (mxs_nand_bbm_in_data_chunk(geo, mtd, &bbm_chunk))
+ 			break;
+@@ -432,14 +439,19 @@
+ static int mxs_nand_device_ready(struct mtd_info *mtd)
+ {
+ 	struct nand_chip *chip = mtd_to_nand(mtd);
+ 	struct mxs_nand_info *nand_info = nand_get_controller_data(chip);
+ 	uint32_t tmp;
+ 
++#if defined(CONFIG_MX23)
++	tmp = readl(&nand_info->gpmi_regs->hw_gpmi_debug);
++	tmp >>= (GPMI_DEBUG_READY_OFFSET + nand_info->cur_chip);
++#else
+ 	tmp = readl(&nand_info->gpmi_regs->hw_gpmi_stat);
+ 	tmp >>= (GPMI_STAT_READY_BUSY_OFFSET + nand_info->cur_chip);
++#endif
+ 
+ 	return tmp & 1;
+ }
+ 
+ /*
+  * Select the NAND chip.
+@@ -459,12 +471,13 @@
+  * swapping the block mark, or swapping it *back* -- but it doesn't matter
+  * because the the operation is the same.
+  */
+ static void mxs_nand_swap_block_mark(struct bch_geometry *geo,
+ 				     uint8_t *data_buf, uint8_t *oob_buf)
+ {
++#if !defined(CONFIG_MX23)
+ 	uint32_t bit_offset = geo->block_mark_bit_offset;
+ 	uint32_t buf_offset = geo->block_mark_byte_offset;
+ 
+ 	uint32_t src;
+ 	uint32_t dst;
+ 
+@@ -483,12 +496,13 @@
+ 
+ 	data_buf[buf_offset] &= ~(0xff << bit_offset);
+ 	data_buf[buf_offset + 1] &= 0xff << bit_offset;
+ 
+ 	data_buf[buf_offset] |= dst << bit_offset;
+ 	data_buf[buf_offset + 1] |= dst >> (8 - bit_offset);
++#endif
+ }
+ 
+ /*
+  * Read data from NAND.
+  */
+ static void mxs_nand_read_buf(struct mtd_info *mtd, uint8_t *buf, int length)
+@@ -1060,13 +1074,18 @@
+ 		/*
+ 		 * If control arrives here, we're not doing a "raw" read. Fill
+ 		 * the OOB buffer with set bits and correct the block mark.
+ 		 */
+ 		memset(nand->oob_poi, 0xff, mtd->oobsize);
+ 
++#if defined(CONFIG_MX23)
++		nand->cmdfunc(mtd, NAND_CMD_READ0, 0, page);
++#else
+ 		nand->cmdfunc(mtd, NAND_CMD_READ0, mtd->writesize, page);
++#endif
++
+ 		mxs_nand_read_buf(mtd, nand->oob_poi, 1);
+ 	}
+ 
+ 	return 0;
+ 
+ }
+@@ -1092,13 +1111,18 @@
+ 	if (!nand_info->marking_block_bad) {
+ 		printf("NXS NAND: Writing OOB isn't supported\n");
+ 		return -EIO;
+ 	}
+ 
+ 	/* Write the block mark. */
++#if defined(CONFIG_MX23)
++	nand->cmdfunc(mtd, NAND_CMD_SEQIN, 0, page);
++#else
+ 	nand->cmdfunc(mtd, NAND_CMD_SEQIN, mtd->writesize, page);
++#endif
++
+ 	nand->write_buf(mtd, &block_mark, 1);
+ 	nand->cmdfunc(mtd, NAND_CMD_PAGEPROG, -1, -1);
+ 
+ 	/* Check if it worked. */
+ 	if (nand->waitfunc(mtd, nand) & NAND_STATUS_FAIL)
+ 		return -EIO;
+@@ -1216,13 +1240,13 @@
+ 	if (ret)
+ 		return ret;
+ 
+ 	mxs_nand_dump_geo(mtd);
+ 
+ 	/* Configure BCH and set NFC geometry */
+-	mxs_reset_block(&bch_regs->hw_bch_ctrl_reg);
++	gpmi_mxs_reset_block(&bch_regs->hw_bch_ctrl_reg, GPMI_IS_MXS());
+ 
+ 	/* Configure layout 0 */
+ 	tmp = (geo->ecc_chunk_count - 1) << BCH_FLASHLAYOUT0_NBLOCKS_OFFSET;
+ 	tmp |= MXS_NAND_METADATA_SIZE << BCH_FLASHLAYOUT0_META_SIZE_OFFSET;
+ 	tmp |= (geo->ecc_strength >> 1) << BCH_FLASHLAYOUT0_ECC0_OFFSET;
+ 	tmp |= geo->ecc_chunk0_size >> MXS_NAND_CHUNK_DATA_CHUNK_SIZE_SHIFT;
+@@ -1313,21 +1337,26 @@
+ 		}
+ 	}
+ 
+ 	/* Init the DMA controller. */
+ 	mxs_dma_init();
+ 	for (j = MXS_DMA_CHANNEL_AHB_APBH_GPMI0;
+-		j <= MXS_DMA_CHANNEL_AHB_APBH_GPMI7; j++) {
++#if defined(CONFIG_MX23)
++		j <= MXS_DMA_CHANNEL_AHB_APBH_GPMI3;
++#else
++		j <= MXS_DMA_CHANNEL_AHB_APBH_GPMI7;
++#endif
++	j++) {
+ 		ret = mxs_dma_init_channel(j);
+ 		if (ret)
+ 			goto err3;
+ 	}
+ 
+ 	/* Reset the GPMI block. */
+ 	mxs_reset_block(&info->gpmi_regs->hw_gpmi_ctrl0_reg);
+-	mxs_reset_block(&info->bch_regs->hw_bch_ctrl_reg);
++	gpmi_mxs_reset_block(&info->bch_regs->hw_bch_ctrl_reg, GPMI_IS_MXS());
+ 
+ 	/*
+ 	 * Choose NAND mode, set IRQ polarity, disable write protection and
+ 	 * select BCH ECC.
+ 	 */
+ 	clrsetbits_le32(&info->gpmi_regs->hw_gpmi_ctrl1,
+@@ -1425,54 +1454,85 @@
+  *                           RP
+  */
+ static void mxs_compute_timings(struct nand_chip *chip,
+ 				const struct nand_sdr_timings *sdr)
+ {
+ 	struct mxs_nand_info *nand_info = nand_get_controller_data(chip);
+-	unsigned long clk_rate;
++	unsigned long clk_rate, min_rate, hw_clk_rate;
++	struct mtd_info *mtd = nand_to_mtd(chip);
+ 	unsigned int dll_wait_time_us;
+ 	unsigned int dll_threshold_ps = nand_info->max_chain_delay;
+ 	unsigned int period_ps, reference_period_ps;
+ 	unsigned int data_setup_cycles, data_hold_cycles, addr_setup_cycles;
+ 	unsigned int tRP_ps;
+ 	bool use_half_period;
+ 	int sample_delay_ps, sample_delay_factor;
+-	u16 busy_timeout_cycles;
++	unsigned int busy_timeout_cycles;
++	u64 busy_timeout_ps;
+ 	u8 wrn_dly_sel;
+ 	u32 timing0;
+ 	u32 timing1;
+ 	u32 ctrl1n;
+ 
+ 	if (sdr->tRC_min >= 30000) {
+ 		/* ONFI non-EDO modes [0-3] */
+ 		clk_rate = 22000000;
++		min_rate = 0;
+ 		wrn_dly_sel = GPMI_CTRL1_WRN_DLY_SEL_4_TO_8NS;
++		debug("%s, setting ONFI onfi edo [0-3]\n", __func__);
+ 	} else if (sdr->tRC_min >= 25000) {
+ 		/* ONFI EDO mode 4 */
+ 		clk_rate = 80000000;
++		min_rate = 22000000;
+ 		wrn_dly_sel = GPMI_CTRL1_WRN_DLY_SEL_NO_DELAY;
+ 		debug("%s, setting ONFI onfi edo 4\n", __func__);
+ 	} else {
+ 		/* ONFI EDO mode 5 */
+ 		clk_rate = 100000000;
++		min_rate = 80000000;
+ 		wrn_dly_sel = GPMI_CTRL1_WRN_DLY_SEL_NO_DELAY;
+ 		debug("%s, setting ONFI onfi edo 5\n", __func__);
+ 	}
+ 
++	if (nand_info->gpmi_clk) {
++		/* Clock dividers do NOT guarantee a clean clock signal on its output
++		 * during the change of the divide factor on i.MX6Q/UL/SX. On i.MX7/8,
++		 * all clock dividers provide these guarantee.
++		 */
++		if (IS_ENABLED(CONFIG_MX6ULL))
++			clk_disable(nand_info->gpmi_clk);
++
++		hw_clk_rate = clk_set_rate(nand_info->gpmi_clk, clk_rate);
++
++		if (IS_ENABLED(CONFIG_MX6ULL))
++			clk_enable(nand_info->gpmi_clk);
++	}
++	else {
++		hw_clk_rate = mxs_set_gpmiclk(clk_rate / 1000u, 0) * 1000u;
++	}
++
++	if (hw_clk_rate <= min_rate) {
++		dev_err(mtd->dev, "clock setting: expected %lu, got %lu\n",
++			clk_rate, hw_clk_rate);
++		return;
++	}
++
++	clk_rate = hw_clk_rate;
+ 	/* SDR core timings are given in picoseconds */
+ 	period_ps = div_u64((u64)NSEC_PER_SEC * 1000, clk_rate);
+ 
+ 	addr_setup_cycles = TO_CYCLES(sdr->tALS_min, period_ps);
+ 	data_setup_cycles = TO_CYCLES(sdr->tDS_min, period_ps);
+ 	data_hold_cycles = TO_CYCLES(sdr->tDH_min, period_ps);
+-	busy_timeout_cycles = TO_CYCLES(sdr->tWB_max + sdr->tR_max, period_ps);
++	busy_timeout_ps = max(sdr->tBERS_max, sdr->tPROG_max);
++	busy_timeout_cycles = TO_CYCLES(busy_timeout_ps, period_ps);
+ 
+ 	timing0 = (addr_setup_cycles << GPMI_TIMING0_ADDRESS_SETUP_OFFSET) |
+ 		      (data_hold_cycles << GPMI_TIMING0_DATA_HOLD_OFFSET) |
+ 		      (data_setup_cycles << GPMI_TIMING0_DATA_SETUP_OFFSET);
+-	timing1 = (busy_timeout_cycles * 4096) << GPMI_TIMING1_DEVICE_BUSY_TIMEOUT_OFFSET;
++	timing1 = DIV_ROUND_UP(busy_timeout_cycles, 4096) << GPMI_TIMING1_DEVICE_BUSY_TIMEOUT_OFFSET;
+ 
+ 	/*
+ 	 * Derive NFC ideal delay from {3}:
+ 	 *
+ 	 *                     (tREA + 4000 - tRP) * 8
+ 	 *         RDN_DELAY = -----------------------
+@@ -1506,14 +1566,12 @@
+ 	 * Clear several CTRL1 fields, DLL must be disabled when setting
+ 	 * RDN_DELAY or HALF_PERIOD.
+ 	 */
+ 	writel(GPMI_CTRL1_CLEAR_MASK, &nand_info->gpmi_regs->hw_gpmi_ctrl1_clr);
+ 	writel(ctrl1n, &nand_info->gpmi_regs->hw_gpmi_ctrl1_set);
+ 
+-	clk_set_rate(nand_info->gpmi_clk, clk_rate);
+-
+ 	/* Wait 64 clock cycles before using the GPMI after enabling the DLL */
+ 	dll_wait_time_us = USEC_PER_SEC / clk_rate * 64;
+ 	if (!dll_wait_time_us)
+ 		dll_wait_time_us = 1;
+ 
+ 	/* Wait for the DLL to settle. */
+@@ -1526,12 +1584,18 @@
+ 	struct nand_chip *chip = mtd_to_nand(mtd);
+ 	const struct nand_sdr_timings *sdr;
+ 
+ 	sdr = nand_get_sdr_timings(conf);
+ 	if (IS_ERR(sdr))
+ 		return PTR_ERR(sdr);
++
++	/* Only MX28/MX6 GPMI controller can reach EDO timings */
++	#if !defined(CONFIG_MX28) && !defined(CONFIG_MX6)
++	if (sdr->tRC_min <= 25000)
++		return -ENOTSUPP;
++	#endif
+ 
+ 	/* Stop here if this call was just a check */
+ 	if (chipnr < 0)
+ 		return 0;
+ 
+ 	/* Do the actual derivation of the controller timings */
+@@ -1625,20 +1689,21 @@
+ 
+ 	nand->read_byte		= mxs_nand_read_byte;
+ 
+ 	nand->read_buf		= mxs_nand_read_buf;
+ 	nand->write_buf		= mxs_nand_write_buf;
+ 
+-	if (nand_info->gpmi_clk)
+-		nand->setup_data_interface = mxs_nand_setup_interface;
++	nand->setup_data_interface = mxs_nand_setup_interface;
+ 
+ 	/* first scan to find the device and get the page size */
+-	if (nand_scan_ident(mtd, CONFIG_SYS_MAX_NAND_DEVICE, NULL))
++	err = nand_scan_ident(mtd, CONFIG_SYS_MAX_NAND_DEVICE, NULL);
++	if (err)
+ 		goto err_free_buffers;
+ 
+-	if (mxs_nand_setup_ecc(mtd))
++	err = mxs_nand_setup_ecc(mtd);
++	if (err)
+ 		goto err_free_buffers;
+ 
+ 	nand->ecc.read_page	= mxs_nand_ecc_read_page;
+ 	nand->ecc.write_page	= mxs_nand_ecc_write_page;
+ 	nand->ecc.read_oob	= mxs_nand_ecc_read_oob;
+ 	nand->ecc.write_oob	= mxs_nand_ecc_write_oob;
+
+--- uboot-2024.04/arch/arm/include/asm/mach-imx/regs-gpmi.h	2024-04-02 22:58:58.000000000 
++++ uboot-2024.04/arch/arm/include/asm/mach-imx/regs-gpmi.h	2026-06-22 10:17:26.000000000 
+@@ -161,7 +161,9 @@
+ #define	GPMI_STAT_FIFO_FULL				(1 << 1)
+ #define	GPMI_STAT_PRESENT				(1 << 0)
+ 
+-#define	GPMI_DEBUG_WAIT_FOR_READY_END_MASK		(0xff << 24)
++#define	GPMI_DEBUG_READY_MASK				(0xf << 28)
++#define	GPMI_DEBUG_READY_OFFSET				28
++#define	GPMI_DEBUG_WAIT_FOR_READY_END_MASK		(0xf << 24)
+ #define	GPMI_DEBUG_WAIT_FOR_READY_END_OFFSET		24
+ #define	GPMI_DEBUG_DMA_SENSE_MASK			(0xff << 16)
+ #define	GPMI_DEBUG_DMA_SENSE_OFFSET			16
+
