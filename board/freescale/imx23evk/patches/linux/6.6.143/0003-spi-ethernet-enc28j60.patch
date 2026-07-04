@@ -1,0 +1,328 @@
+--- a/arch/arm/boot/dts/nxp/mxs/Makefile.orig	2026-06-19 23:39:44.000000000 
++++ a/arch/arm/boot/dts/nxp/mxs/Makefile	2026-07-04 23:30:26.000000000 
+@@ -1,9 +1,10 @@
+ # SPDX-License-Identifier: GPL-2.0
+ dtb-$(CONFIG_ARCH_MXS) += \
+ 	imx23-evk.dtb \
++	imx23-evk-enc28j60.dtb \
+ 	imx23-olinuxino.dtb \
+ 	imx23-sansa.dtb \
+ 	imx23-stmp378x_devb.dtb \
+ 	imx23-xfi3.dtb \
+ 	imx28-apf28.dtb \
+ 	imx28-apf28dev.dtb \
+
+--- 
++++ a/arch/arm/boot/dts/nxp/mxs/imx23-evk-enc28j60.dts	2026-07-04 23:41:00.000000000 
+@@ -0,0 +1,311 @@
++// SPDX-License-Identifier: GPL-2.0+
++//
++// Copyright 2012 Freescale Semiconductor, Inc.
++
++/dts-v1/;
++#include <dt-bindings/interrupt-controller/irq.h>
++#include <dt-bindings/gpio/gpio.h>
++#include "imx23.dtsi"
++#include "imx23-audio.dtsi"
++
++/ {
++	model = "Freescale i.MX23 Evaluation Kit";
++	compatible = "fsl,imx23-evk", "fsl,imx23";
++
++	memory@40000000 {
++		device_type = "memory";
++		reg = <0x40000000 0x08000000>;
++	};
++
++	reg_vddio_sd0: regulator-vddio-sd0 {
++		compatible = "regulator-fixed";
++		regulator-name = "vddio-sd0";
++		regulator-min-microvolt = <3300000>;
++		regulator-max-microvolt = <3300000>;
++		gpio = <&gpio1 29 0>;
++	};
++
++	reg_lcd_3v3: regulator-lcd-3v3 {
++		compatible = "regulator-fixed";
++		regulator-name = "lcd-3v3";
++		regulator-min-microvolt = <3300000>;
++		regulator-max-microvolt = <3300000>;
++		gpio = <&gpio1 18 0>;
++		enable-active-high;
++	};
++
++	panel {
++		compatible = "panel-dpi";
++		backlight = <&backlight_display>;
++		power-supply = <&reg_lcd_3v3>;
++
++		panel-timing {
++			clock-frequency = <9000000>;
++			hactive = <480>;
++			hback-porch = <2>;
++			hfront-porch = <2>;
++			hsync-len = <41>;
++			vactive = <272>;
++			vback-porch = <2>;
++			vfront-porch = <2>;
++			vsync-len = <10>;
++			hsync-active = <0>;
++			vsync-active = <0>;
++			de-active = <1>;
++			pixelclk-active = <0>;
++		};
++
++		port {
++			panel_in: endpoint {
++				remote-endpoint = <&display_out>;
++			};
++		};
++	};
++
++	apb@80000000 {
++		apbh@80000000 {
++			nand-controller@8000c000 {
++				pinctrl-names = "default";
++				pinctrl-0 = <&gpmi_pins_a &gpmi_pins_fixup>;
++				//nand-on-flash-bbt;
++				status = "okay";
++
++				partitions {
++					compatible = "fixed-partitions";
++					#address-cells = <1>;
++					#size-cells = <1>;
++
++					partition@0 {
++						label = "boot";
++						reg = <0x00000000 0x04000000>;
++					};
++
++					partition@1 {
++						label = "env1";
++						reg = <0x04000000 0x01000000>;
++					};
++
++					partition@2 {
++						label = "env2";
++						reg = <0x05000000 0x01000000>;
++					};
++
++					partition@3 {
++						label = "rootfs1";
++						slc-mode;
++						reg = <0x06000000 0x10000000>;
++					};
++
++					partition@4 {
++						label = "rootfs2";
++						slc-mode;
++						reg = <0x16000000 0x10000000>;
++					};
++
++					partition@5 {
++						label = "data1";
++						slc-mode;
++						reg = <0x26000000 0x10000000>;
++					};
++
++					partition@6 {
++						label = "data2";
++						slc-mode;
++						reg = <0x36000000 0x10000000>;
++					};
++
++					partition@7 {
++						label = "spare";
++						slc-mode;
++						reg = <0x46000000 0xba000000>;
++					};
++				};
++			};
++
++			ssp0: spi@80010000 {
++				#address-cells = <1>;
++				#size-cells = <0>;
++				compatible = "fsl,imx23-spi";
++				pinctrl-names = "default";
++				pinctrl-0 = <&ssp0_pins_a &mmc0_sck_cfg>;
++				status = "okay";
++
++				enc28j60: ethernet@0 {
++					compatible = "microchip,enc28j60";
++					pinctrl-names = "default";
++					pinctrl-0 = <&enc28j60_pins>;
++					reg = <0>;
++					interrupt-parent = <&gpio2>;
++					interrupts = <3 IRQ_TYPE_EDGE_FALLING>;
++					spi-max-frequency = <6000000>;
++					status = "okay";
++				};
++			};
++
++			pinctrl@80018000 {
++				pinctrl-names = "default";
++				pinctrl-0 = <&hog_pins_a>;
++
++				hog_pins_a: hog@0 {
++					reg = <0>;
++					fsl,pinmux-ids = <
++						MX23_PAD_LCD_RESET__GPIO_1_18
++						MX23_PAD_PWM3__GPIO_1_29
++						MX23_PAD_PWM4__GPIO_1_30
++					>;
++					fsl,drive-strength = <MXS_DRIVE_4mA>;
++					fsl,voltage = <MXS_VOLTAGE_HIGH>;
++					fsl,pull-up = <MXS_PULL_DISABLE>;
++				};
++
++				enc28j60_pins: enc28j60_pins@0 {
++					reg = <0>;
++					fsl,pinmux-ids = <
++						MX23_PAD_SSP1_DATA1__GPIO_2_3	/* ETHNINT */
++						MX23_PAD_SSP1_DATA2__GPIO_2_4	/* ETHNWOL/NC */
++					>;
++					fsl,drive-strength = <MXS_DRIVE_4mA>;
++					fsl,voltage = <MXS_VOLTAGE_HIGH>;
++					fsl,pull-up = <MXS_PULL_ENABLE>;
++				};
++
++				ssp0_pins_a: ssp0_pins@0 {
++					reg = <0>;
++					fsl,pinmux-ids = <
++						MX23_PAD_SSP1_DATA0__SSP1_DATA0	/* MISO */
++						MX23_PAD_SSP1_DATA3__SSP1_DATA3	/* SS/CS */
++						MX23_PAD_SSP1_CMD__SSP1_CMD	/* MOSI */
++						MX23_PAD_SSP1_SCK__SSP1_SCK	/* SCK */
++					>;
++					fsl,drive-strength = <MXS_DRIVE_8mA>;
++					fsl,voltage = <MXS_VOLTAGE_HIGH>;
++					fsl,pull-up = <MXS_PULL_ENABLE>;
++				};
++			};
++
++			lcdif@80030000 {
++				pinctrl-names = "default";
++				pinctrl-0 = <&lcdif_24bit_pins_a>;
++				status = "okay";
++
++				port {
++					display_out: endpoint {
++						remote-endpoint = <&panel_in>;
++					};
++				};
++			};
++		};
++
++		apbx@80040000 {
++			lradc@80050000 {
++				status = "okay";
++				fsl,lradc-touchscreen-wires = <4>;
++			};
++
++			pwm: pwm@80064000 {
++				pinctrl-names = "default";
++				pinctrl-0 = <&pwm2_pins_a>;
++				status = "okay";
++			};
++
++			auart0: serial@8006c000 {
++				pinctrl-names = "default";
++				pinctrl-0 = <&auart0_pins_a>;
++				status = "okay";
++			};
++
++			duart: serial@80070000 {
++				pinctrl-names = "default";
++				pinctrl-0 = <&duart_pins_a>;
++				status = "okay";
++			};
++
++			usbphy0: usbphy@8007c000 {
++				status = "okay";
++			};
++		};
++	};
++
++	ahb@80080000 {
++		usb0: usb@80080000 {
++			status = "okay";
++		};
++	};
++
++	backlight_display: backlight {
++		compatible = "pwm-backlight";
++		pwms = <&pwm 2 5000000>;
++		brightness-levels = <0 4 8 16 32 64 128 255>;
++		default-brightness-level = <6>;
++	};
++
++	adc-keys {
++		compatible = "adc-keys";
++		io-channels = <&lradc 0>;
++		io-channel-names = "buttons";
++		poll-interval = <100>; /* Polling interval in ms */
++		keyup-threshold-microvolt = <3040000>; /* Voltage when no buttons are pressed */
++
++		button-key-1 {
++			label = "KEY_1";
++			linux,code = <2>;
++			press-threshold-microvolt = <20000>;
++		};
++
++		button-key-right {
++			label = "KEY_RIGHT";
++			linux,code = <106>;
++			press-threshold-microvolt = <280000>;
++		};
++
++		button-key-2 {
++			label = "KEY_2";
++			linux,code = <3>;
++			press-threshold-microvolt = <560000>;
++		};
++
++		button-key-left {
++			label = "KEY_LEFT";
++			linux,code = <105>;
++			press-threshold-microvolt = <840000>;
++		};
++
++		button-key-up {
++			label = "KEY_UP";
++			linux,code = <103>;
++			press-threshold-microvolt = <1400000>;
++		};
++
++		button-key-3 {
++			label = "KEY_3";
++			linux,code = <4>;
++			press-threshold-microvolt = <1680000>;
++		};
++
++		button-key-down {
++			label = "KEY_DOWN";
++			linux,code = <108>;
++			press-threshold-microvolt = <1940000>;
++		};
++
++		button-key-enter {
++			label = "KEY_ENTER";
++			linux,code = <28>;
++			press-threshold-microvolt = <2500000>;
++		};
++	};
++};
++
++&i2c {
++	pinctrl-names = "default";
++	pinctrl-0 = <&i2c_pins_a>;
++	status = "okay";    
++
++	eeprom@50 {
++		compatible = "microchip,24lc128", "atmel,24c128";
++		reg = <0x50>;
++		pagesize = <64>;
++		size = <16384>;
++		num-address-bytes = <2>;
++	};
++};
