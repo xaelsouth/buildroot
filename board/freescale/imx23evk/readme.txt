@@ -20,6 +20,9 @@ You will find in output/images/ directory the following files:
   - rootfs.tar
   - u-boot.sd
   - zImage
+  - imx23-evk-enc28j60.dtb
+  - linux-itb.sb
+  - sb_loader
 
 Create a bootable SD card
 =========================
@@ -38,11 +41,33 @@ Then, run the following command:
 Boot the i.MX23 EVK board
 =========================
 
+SD card:
 - Put the Boot Mode Select jumper as 1 0 0 1 so that it can boot
   from the SD card
 - Insert the SD card in the SD Card slot of the board;
 - Connect an RS232 UART cable to the Debug UART Port and connect using a
   terminal emulator at 115200 bps, 8n1;
-- power on the board.
+- Power on the board.
+
+USB:
+- Put the Boot Mode Select jumper as 0 0 0 0 so that it can boot
+  from the USB
+- Connect an RS232 UART cable to the Debug UART Port and connect using a
+  terminal emulator at 115200 bps, 8n1
+- Power on the board
+- Execute on host PC:
+  output/images/sb_loader -d -p hid output/images/linux-itb.sb.
+
+NAND:
+- Boot from SD card as described above. linux-itb.sb has to be in rootfs.
+- Alternatively, boot from USB and use network to transfer
+  linux-itb.sb to the board:
+  ethtool -s eth0 speed 10 duplex full autoneg off
+  dhcpc -i eth0
+  inetd
+- Write bootsream in NAND:
+  kobs-ng -d -v -0 -w --search_exponent=1 linux-itb.sb
+- Put the Boot Mode Select jumper as 0 1 0 0 so that it can boot from NAND
+- Reboot.
 
 Enjoy!
