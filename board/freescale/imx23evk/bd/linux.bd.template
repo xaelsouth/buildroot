@@ -1,0 +1,27 @@
+options {
+	driveTag = 0x00;
+	flags = 0x01;
+}
+
+sources {
+	u_boot_spl="%UBOOT_SPL%";
+	u_boot="%UBOOT_BIN%";
+	linux="%LINUX%";
+	ramdisk="%RAMDISK%";
+	dtb="%DTB%";
+}
+
+section (0) {
+	load u_boot_spl > 0x1000;
+	call 0x1000;
+
+	load linux   > 0x42000000;
+	load dtb     > 0x41000000;
+
+	// This is the ramdisk size.
+	load %RAMDISK_SIZE% > 0x1000;
+	load ramdisk > 0x43000000;
+
+	load u_boot  > 0x40002000;
+	jump 0x40002000;
+}
