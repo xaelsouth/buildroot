@@ -1,0 +1,239 @@
+Left base folder: imx-bootlets-src-10.12.01
+Right base folder: mxs-bootlets-10.12.01
+--- a/boot_prep/debug.c	2010-11-04 19:35:38.000000000 
++++ a/boot_prep/debug.c	2026-07-22 21:03:44.000000000 
+@@ -16,12 +16,14 @@
+  * You should have received a copy of the GNU General Public License
+  * along with this program; if not, write to the Free Software
+  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
+  */
+ 
+ #include <stdarg.h>
++#include <debug.h>
++
+ void printhex(int data)
+ {
+ 	int i = 0;
+ 	char c;
+ 	for (i = sizeof(int)*2-1; i >= 0; i--) {
+ 		c = data>>(i*4);
+@@ -32,13 +34,12 @@
+ 			putc(c+'0');
+ 	}
+ }
+ void printf(char *fmt, ...)
+ {
+ 	va_list args;
+-	int one;
+ 	va_start(args, fmt);
+ 	while (*fmt) {
+ 
+ 		if (*fmt == '%') {
+ 			fmt++;
+ 			switch (*fmt) {
+@@ -58,6 +59,9 @@
+ 			putc(*fmt);
+ 		}
+ 		fmt++;
+ 	}
+ 	va_end(args);
+ }
++
++void __stack_chk_guard(void) {}
++void __stack_chk_fail(void) {}
+--- a/boot_prep/init-mx23.c	2010-11-04 19:35:38.000000000 
++++ a/boot_prep/init-mx23.c	2026-07-22 21:05:13.000000000 
+@@ -599,14 +599,12 @@
+ 		}
+ 	}
+ }
+ 
+ void set_port_priority()
+ {
+-	unsigned int value;
+-
+ 	HW_EMI_CTRL_CLR(BM_EMI_CTRL_PORT_PRIORITY_ORDER);
+ 	HW_EMI_CTRL_SET(BF_EMI_CTRL_PORT_PRIORITY_ORDER(
+ 				BV_EMI_CTRL_PORT_PRIORITY_ORDER__PORT1230)
+ 		       );
+ 
+ 	HW_EMI_CTRL_CLR(BM_EMI_CTRL_PORT_PRIORITY_ORDER);
+@@ -662,15 +660,13 @@
+ 	printf("cpu 0x%x\r\n" , HW_CLKCTRL_CPU_RD());
+ 
+ }
+ int _start(int arg)
+ {
+ 	unsigned int value;
+-	volatile int *pTest = 0x40000000;
+ 	unsigned int CE = 0x1;
+-	int i;
+ 
+ 	printf(__DATE__ __TIME__);
+ 	printf("\r\n");
+ 	/*printf("Fuse 0x%x\r\n",HW_OCOTP_CUSTCAP_RD());*/
+ 	if ((HW_OCOTP_CUSTCAP_RD() & 0x30000000) > 0) {
+ 		/*EVK board*/
+--- a/boot_prep/Makefile	2010-11-04 19:35:38.000000000 
++++ a/boot_prep/Makefile	2026-07-22 21:03:44.000000000 
+@@ -17,13 +17,13 @@
+ STRIP	= $(CROSS_COMPILE)strip
+ OBJCOPY	= $(CROSS_COMPILE)objcopy
+ OBJDUMP	= $(CROSS_COMPILE)objdump
+ 
+ MEM_TYPE ?= MEM_DDR1
+ 
+-CFLAGS 	= -g -Wall -I$(INCLUDEDIR) -I$(INCLUDEDIR)/mach -I./ -O -D$(MEM_TYPE)
++CFLAGS 	= -ffreestanding -Os -Wall -I$(INCLUDEDIR) -I$(INCLUDEDIR)/mach -I./ -O -D$(MEM_TYPE)
+ LDFLAGS = -static -nostdlib -T $(BOOT_LAYOUT)
+ 
+ # Generic code
+ CORE_OBJS = init-$(ARCH).o debug.o
+ 
+ all: boot_prep
+--- a/mach-mx23/drivers/power/src/ddi_power.c	2010-11-04 19:35:38.000000000 
++++ a/mach-mx23/drivers/power/src/ddi_power.c	2026-07-22 21:05:40.000000000 
+@@ -29,14 +29,12 @@
+ ////////////////////////////////////////////////////////////////////////////////
+ // Variables
+ ////////////////////////////////////////////////////////////////////////////////
+ //static bool bEnableVdddSafetyLimits = true;
+ static bool bEnableVddaSafetyLimits = true;
+ static bool bEnableVddioSafetyLimits = true;
+-static bool b5vPowerSourceValid = false;
+-static bool bForceDcdcPowerSource = false;
+ static bool bUseSafeVoltageLimits = true;
+ 
+ static bool b4p2Enabled = false;
+ 
+ RtStatus_t (*ddi_power_WaitCallback)(uint32_t) = NULL;
+ RtStatus_t (*ddi_power_LockRailCallback)(uint32_t) = NULL;
+--- a/mach-mx23/hw/lradc/src/hw_lradc_setup.c	2010-11-04 19:35:38.000000000 
++++ a/mach-mx23/hw/lradc/src/hw_lradc_setup.c	2026-07-22 21:03:44.000000000 
+@@ -19,12 +19,14 @@
+ #include "hw/lradc/hw_lradc.h"
+ #include "registers/regs.h"
+ #include "registers/regslradc.h"
+ #include "hw/power/hw_power.h"
+ #include "error.h"
+ 
++void hw_digctl_MicrosecondWait(int);
++
+ ////////////////////////////////////////////////////////////////////////////////
+ // Code
+ ////////////////////////////////////////////////////////////////////////////////
+ 
+ ////////////////////////////////////////////////////////////////////////////////
+ //! See hw_lradc.h for details.
+--- a/mach-mx23/hw/power/src/hw_power_conversions.c	2010-11-04 19:35:38.000000000 
++++ a/mach-mx23/hw/power/src/hw_power_conversions.c	2026-07-22 21:03:44.000000000 
+@@ -200,13 +200,12 @@
+ ////////////////////////////////////////////////////////////////////////////////
+ //! See hw_power.h for details.
+ ////////////////////////////////////////////////////////////////////////////////
+ uint16_t hw_power_ConvertSettingToBattBo(uint16_t u16Setting)
+ {
+     uint16_t LiIonBase;
+-    uint16_t AlkalBase;
+ 
+     // Calculate the equation constant.
+       LiIonBase = BATT_BRWNOUT_LIION_BASE_MV_378x;
+ 
+         return ( u16Setting * BATT_BRWNOUT_LIION_LEVEL_STEP_MV ) + LiIonBase;
+ }
+--- a/mach-mx23/hw/power/src/hw_power_fiq.c	2010-11-04 19:35:38.000000000 
++++ a/mach-mx23/hw/power/src/hw_power_fiq.c	2026-07-22 21:03:44.000000000 
+@@ -37,12 +37,13 @@
+ //------------------------------------------------------------------------------
+ //#define DEBUG_FIQ 1
+ 
+ ////////////////////////////////////////////////////////////////////////////////
+ // Prototypes
+ ////////////////////////////////////////////////////////////////////////////////
++void hw_icoll_SoftTrigger(int, bool);
+ 
+ ////////////////////////////////////////////////////////////////////////////////
+ // Code
+ ////////////////////////////////////////////////////////////////////////////////
+ 
+ ////////////////////////////////////////////////////////////////////////////////
+--- a/power_prep/debug.c	2010-11-04 19:35:38.000000000 
++++ a/power_prep/debug.c	2026-07-22 21:03:44.000000000 
+@@ -16,12 +16,14 @@
+  * You should have received a copy of the GNU General Public License
+  * along with this program; if not, write to the Free Software
+  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
+  */
+ 
+ #include <stdarg.h>
++#include <debug.h>
++
+ void printhex(int data)
+ {
+ 	int i = 0;
+ 	char c;
+ 	for (i = sizeof(int)*2-1; i >= 0; i--) {
+ 		c = data>>(i*4);
+@@ -32,13 +34,12 @@
+ 			putc(c+'0');
+ 	}
+ }
+ void printf(char *fmt, ...)
+ {
+ 	va_list args;
+-	int one;
+ 	va_start(args, fmt);
+ 	while (*fmt) {
+ 
+ 		if (*fmt == '%') {
+ 			fmt++;
+ 			switch (*fmt) {
+--- a/power_prep/Makefile	2010-11-04 19:35:38.000000000 
++++ a/power_prep/Makefile	2026-07-22 21:03:44.000000000 
+@@ -26,13 +26,13 @@
+ 
+ POWERFLAG = ?
+ ifeq ($(POWERFLAG),MXS_VBUS_CURRENT_DRAW)
+ CFLAGS += -DMXS_VBUS_CURRENT_DRAW
+ endif
+ 
+-CFLAGS 	+= -Wall $(INCLUDEDIRS) -I./ -O -DSTMP378x -D$(ARCH)
++CFLAGS 	+= -ffreestanding -Wall $(INCLUDEDIRS) -I./ -O -DSTMP378x -D$(ARCH)
+ LDFLAGS = -static -gc-sections -nostdlib -T $(BOOT_LAYOUT)
+ 
+ 
+ #TOP_LEVEL_OBJS = power_prep.o
+ 
+ #POWER_PREP_OBJS += $(COMMONSRCDIR)/hw/libhw.a
+--- a/power_prep/power_prep.c	2010-11-04 19:35:38.000000000 
++++ a/power_prep/power_prep.c	2026-07-22 21:03:44.000000000 
+@@ -73,12 +73,14 @@
+ bool PowerPrep_IsBatteryReady( void );
+ void PowerPrep_StopCharger();
+ void PowerPrep_SetCharger(unsigned int current);
+ bool PowerPrep_IsBatteryGood();
+ void PowerPrep_CPUClock2XTAL(void);
+ void PowerPrep_PrintBatteryVoltage(unsigned int value);
++void PowerPrep_CPUClock2PLL(void);
++void PowerPrep_Delay(unsigned int);
+ ////////////////////////////////////////////////////////////////////////////////
+ // Definitions
+ ////////////////////////////////////////////////////////////////////////////////
+ #define POWER_PREP_GROUP                        (0x80000000)
+ #define ERROR_VBUSVALID_RACE_CONDITION          ((int)POWER_PREP_GROUP + 1)
+ #define ERROR_VDDIO_BROWNOUT                    ((int)POWER_PREP_GROUP + 2)
+@@ -1265,11 +1267,13 @@
+ {
+ 	unsigned int currentTime = HW_DIGCTL_MICROSECONDS_RD();
+ 	while ((HW_DIGCTL_MICROSECONDS_RD() - currentTime) <  microSec);
+ }
+ 
+ /* workaround gcc 4.3 link error*/
+-void __aeabi_unwind_cpp_pr1() {}
++void __aeabi_unwind_cpp_pr1(void) {}
++void __stack_chk_guard(void) {}
++void __stack_chk_fail(void) {}
+ // eof power_prep.c
+ //! @}
+ // eof power_prep.c
+ //! @}
