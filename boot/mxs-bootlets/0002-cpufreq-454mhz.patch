@@ -1,0 +1,17 @@
+--- a/boot_prep/init-mx23.c.orig	2026-07-22 22:41:23.000000000 
++++ a/boot_prep/init-mx23.c	2026-07-22 22:44:19.000000000 
+@@ -632,12 +632,14 @@
+ 	value &= ~BM_POWER_VDDDCTRL_TRG;
+ 	value |= BF_POWER_VDDDCTRL_TRG(30); /*change to 1.550v*/
+ 	HW_POWER_VDDDCTRL_WR(value);
+ 
+ 	delay(10000);
+ 
++	HW_CLKCTRL_CPU_WR((HW_CLKCTRL_CPU_RD() & (~(BM_CLKCTRL_CPU_DIV_CPU << BP_CLKCTRL_CPU_DIV_CPU))) | BF_CLKCTRL_CPU_DIV_CPU(1));
++
+ 	printf("Frac 0x%x\r\n", HW_CLKCTRL_FRAC_RD());
+ 
+ 	value = HW_CLKCTRL_FRAC_RD();
+ 	value &= ~BM_CLKCTRL_FRAC_CPUFRAC;
+ 	value |= BF_CLKCTRL_FRAC_CPUFRAC(19);
+ 	value &= ~BM_CLKCTRL_FRAC_CLKGATECPU;
