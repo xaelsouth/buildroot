@@ -1,0 +1,196 @@
+diff --git a/sound/soc/mxs/mxs-builtin-dai.c b/sound/soc/mxs/mxs-builtin-dai.c
+index 18ad29c..9f6065c 100644
+--- a/sound/soc/mxs/mxs-builtin-dai.c
++++ b/sound/soc/mxs/mxs-builtin-dai.c
+@@ -353,12 +353,16 @@ static int mxs_trigger(struct snd_pcm_substream *substream,
+ 	switch (cmd) {
+ 	case SNDRV_PCM_TRIGGER_START:
+ 		dev_dbg(mxs_adc->dev, "SNDRV_PCM_TRIGGER_START\n");
++		if (!playback)
++			mxs_adc_phase_start(mxs_adc);
+ 		mxs_trigger_start(playback, mxs_adc);
+ 		break;
+ 
+ 	case SNDRV_PCM_TRIGGER_RESUME:
+ 		dev_dbg(mxs_adc->dev, "SNDRV_PCM_TRIGGER_RESUME\n");
+ 		dmaengine_resume(chan);
++		if (!playback)
++			mxs_adc_phase_start(mxs_adc);
+ 		mxs_trigger_start(playback, mxs_adc);
+ 		break;
+ 
+@@ -418,6 +422,11 @@ static int mxs_startup(struct snd_pcm_substream *substream,
+ {
+ 	struct mxs_adc_priv *mxs_adc = snd_soc_dai_get_drvdata(cpu_dai);
+ 	int playback = substream->stream == SNDRV_PCM_STREAM_PLAYBACK ? 1 : 0;
++	int ret;
++
++	ret = mxs_adc_pcm_startup(substream);
++	if (ret)
++		return ret;
+ 
+ 	work.mxs_adc = mxs_adc;
+ 	adc_ramp_work.mxs_adc = mxs_adc;
+diff --git a/sound/soc/mxs/mxs-builtin-pcm.c b/sound/soc/mxs/mxs-builtin-pcm.c
+index a192f42..12900b6 100644
+--- a/sound/soc/mxs/mxs-builtin-pcm.c
++++ b/sound/soc/mxs/mxs-builtin-pcm.c
+@@ -37,6 +37,115 @@
+ #define MAX_XFER_BYTES	0xff00
+ #endif
+ 
++/*
++ * Errata 2798: the right ADC channel is sampled 1/2 sample away from the
++ * left one. The channel that leads is delayed by an extra half sample with a
++ * windowed-sinc fractional delay FIR (Q15, unity DC gain, 7.5 samples delay);
++ * the other channel gets a plain 7 sample delay so both stay aligned.
++ * Which channel leads is not documented, so compensation is off by default.
++ */
++static unsigned int adc_phase_lead;
++module_param(adc_phase_lead, uint, 0644);
++MODULE_PARM_DESC(adc_phase_lead,
++	"Errata 2798 ADC phase compensation: 0=off, 1=left channel leads, 2=right channel leads");
++
++static const s16 mxs_adc_phase_fir[MXS_ADC_PHASE_TAPS] = {
++	-5, 56, -212, 576, -1322, 2783, -6023, 20531,
++	20531, -6023, 2783, -1322, 576, -212, 56, -5,
++};
++
++void mxs_adc_phase_start(struct mxs_adc_priv *mxs_adc)
++{
++	struct mxs_adc_phase *ph = &mxs_adc->adc_phase;
++
++	ph->lead = adc_phase_lead <= 2 ? adc_phase_lead : 0;
++	ph->reset = true;
++}
++
++static void mxs_adc_phase_frames(struct mxs_adc_phase *ph, void *buf,
++				 unsigned int frames, bool is32)
++{
++	const unsigned int mask = MXS_ADC_PHASE_TAPS - 1;
++	const unsigned int lead = ph->lead - 1;
++	s16 *p16 = buf;
++	s32 *p32 = buf;
++	unsigned int pos = ph->pos;
++
++	while (frames--) {
++		s32 x_lead = is32 ? p32[lead] : p16[lead];
++		s32 x_lag = is32 ? p32[!lead] : p16[!lead];
++		s64 acc = 0;
++		s32 y_lead;
++		int k;
++
++		pos = (pos + 1) & mask;
++		ph->lead_hist[pos] = x_lead;
++		ph->lag_hist[pos] = x_lag;
++
++		for (k = 0; k < MXS_ADC_PHASE_TAPS; k++)
++			acc += (s64)ph->lead_hist[(pos - k) & mask] *
++			       mxs_adc_phase_fir[k];
++		acc >>= 15;
++
++		if (is32)
++			y_lead = clamp_t(s64, acc, S32_MIN, S32_MAX);
++		else
++			y_lead = clamp_t(s64, acc, S16_MIN, S16_MAX);
++
++		if (is32) {
++			p32[lead] = y_lead;
++			p32[!lead] = ph->lag_hist[(pos - MXS_ADC_PHASE_DELAY) & mask];
++			p32 += 2;
++		} else {
++			p16[lead] = y_lead;
++			p16[!lead] = ph->lag_hist[(pos - MXS_ADC_PHASE_DELAY) & mask];
++			p16 += 2;
++		}
++	}
++
++	ph->pos = pos;
++}
++
++/* Runs in place on captured data just before it is copied to user space */
++static int mxs_adc_pcm_process(struct snd_pcm_substream *substream,
++			       int channel, unsigned long hwoff,
++			       unsigned long bytes)
++{
++	struct snd_pcm_runtime *runtime = substream->runtime;
++	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
++	struct mxs_adc_priv *mxs_adc =
++		snd_soc_dai_get_drvdata(snd_soc_rtd_to_cpu(rtd, 0));
++	struct mxs_adc_phase *ph = &mxs_adc->adc_phase;
++	bool is32;
++
++	if (substream->stream != SNDRV_PCM_STREAM_CAPTURE || !ph->lead)
++		return 0;
++
++	if (ph->reset) {
++		memset(ph->lead_hist, 0, sizeof(ph->lead_hist));
++		memset(ph->lag_hist, 0, sizeof(ph->lag_hist));
++		ph->pos = 0;
++		ph->reset = false;
++	}
++
++	is32 = runtime->format == SNDRV_PCM_FORMAT_S32_LE;
++	mxs_adc_phase_frames(ph, runtime->dma_area + hwoff,
++			     bytes_to_frames(runtime, bytes), is32);
++
++	return 0;
++}
++
++/* The filter only works on the read() path, so capture can't be mmapped */
++int mxs_adc_pcm_startup(struct snd_pcm_substream *substream)
++{
++	if (substream->stream != SNDRV_PCM_STREAM_CAPTURE)
++		return 0;
++
++	return snd_pcm_hw_constraint_mask64(substream->runtime,
++		SNDRV_PCM_HW_PARAM_ACCESS,
++		1ULL << (__force int)SNDRV_PCM_ACCESS_RW_INTERLEAVED);
++}
++
+ static const struct snd_pcm_hardware snd_mxs_hardware = {
+ 	.info				=	SNDRV_PCM_INFO_MMAP |
+ 							SNDRV_PCM_INFO_MMAP_VALID |
+@@ -58,6 +167,7 @@ static const struct snd_pcm_hardware snd_mxs_hardware = {
+ static const struct snd_dmaengine_pcm_config mxs_dmaengine_pcm_config = {
+ 	.pcm_hardware = &snd_mxs_hardware,
+ 	.prealloc_buffer_size = 256 * 1024,
++	.process = mxs_adc_pcm_process,
+ };
+ 
+ int mxs_adc_pcm_platform_register(struct device *dev)
+diff --git a/sound/soc/mxs/mxs-builtin-pcm.h b/sound/soc/mxs/mxs-builtin-pcm.h
+index 681d6e4..e650ec1 100644
+--- a/sound/soc/mxs/mxs-builtin-pcm.h
++++ b/sound/soc/mxs/mxs-builtin-pcm.h
+@@ -27,7 +27,20 @@ struct mxs_irq_data {
+ 	int playback;
+ };
+ 
++#define MXS_ADC_PHASE_TAPS	16
++#define MXS_ADC_PHASE_DELAY	((MXS_ADC_PHASE_TAPS / 2) - 1)
++
++/* Errata 2798 compensation state (capture only) */
++struct mxs_adc_phase {
++	bool reset;
++	unsigned int lead;		/* 0 = off, 1 = left leads, 2 = right leads */
++	unsigned int pos;
++	s32 lead_hist[MXS_ADC_PHASE_TAPS];
++	s32 lag_hist[MXS_ADC_PHASE_TAPS];
++};
++
+ struct mxs_adc_priv {
++	struct mxs_adc_phase adc_phase;
+ 	struct mxs_irq_data adc_err_irq_data;
+ 	struct mxs_irq_data dac_err_irq_data;
+ 	int dma_adc_err_irq;
+@@ -43,6 +56,9 @@ struct mxs_adc_priv {
+ 	u32 unknown_error;
+ };
+ 
++struct snd_pcm_substream;
++void mxs_adc_phase_start(struct mxs_adc_priv *mxs_adc);
++int mxs_adc_pcm_startup(struct snd_pcm_substream *substream);
+ int mxs_adc_pcm_platform_register(struct device *dev);
+ void mxs_adc_pcm_platform_unregister(struct device *dev);
+ 

@@ -1,0 +1,225 @@
+diff --git a/arch/arm/boot/dts/nxp/mxs/imx23-audio.dtsi b/arch/arm/boot/dts/nxp/mxs/imx23-audio.dtsi
+index a887158..4d750ab 100644
+--- a/arch/arm/boot/dts/nxp/mxs/imx23-audio.dtsi
++++ b/arch/arm/boot/dts/nxp/mxs/imx23-audio.dtsi
+@@ -12,6 +12,8 @@
+ 		reg-names = "audioout", "audioin";
+ 		clocks = <&clks 31>;
+ 		clock-names = "filt";
++		nvmem = <&rtc>;
++		nvmem-names = "rtc";
+ 	};
+ 
+ 	cpu_dai: mxs-builtin-cpu-dai {
+diff --git a/arch/arm/boot/dts/nxp/mxs/imx23.dtsi b/arch/arm/boot/dts/nxp/mxs/imx23.dtsi
+index 07636e5..8b3e8bd 100644
+--- a/arch/arm/boot/dts/nxp/mxs/imx23.dtsi
++++ b/arch/arm/boot/dts/nxp/mxs/imx23.dtsi
+@@ -552,7 +552,7 @@
+ 				status = "disabled";
+ 			};
+ 
+-			rtc@8005c000 {
++			rtc: rtc@8005c000 {
+ 				compatible = "fsl,imx23-rtc", "fsl,stmp3xxx-rtc";
+ 				reg = <0x8005c000 0x2000>;
+ 				interrupts = <22>;
+diff --git a/drivers/rtc/rtc-stmp3xxx.c b/drivers/rtc/rtc-stmp3xxx.c
+index 6a3bf69..3323931 100644
+--- a/drivers/rtc/rtc-stmp3xxx.c
++++ b/drivers/rtc/rtc-stmp3xxx.c
+@@ -339,15 +339,6 @@ static int stmp3xxx_rtc_nvram_write(void *priv, unsigned int offset,
+ 	return 0;
+ }
+ 
+-/* HACK: Needed only by mxs-builtin audio driver. */
+-static void __iomem *rtc_data_io = (void __iomem *)0x8005c000;
+-
+-void stmp3xxx_nvmem_write(u32 val, unsigned int offset)
+-{
+-	writel(val, rtc_data_io + offset);
+-}
+-EXPORT_SYMBOL(stmp3xxx_nvmem_write);
+-
+ static int stmp3xxx_rtc_probe(struct platform_device *pdev)
+ {
+ 	struct stmp3xxx_rtc_data *rtc_data;
+@@ -497,8 +488,6 @@ static int stmp3xxx_rtc_probe(struct platform_device *pdev)
+ 	if (err)
+ 		return err;
+ 
+-	rtc_data_io = rtc_data->io;
+-
+ 	stmp3xxx_wdt_register(pdev);
+ 	return 0;
+ }
+diff --git a/sound/soc/codecs/mxs-builtin-codec.c b/sound/soc/codecs/mxs-builtin-codec.c
+index 8c3347a..0150a09 100644
+--- a/sound/soc/codecs/mxs-builtin-codec.c
++++ b/sound/soc/codecs/mxs-builtin-codec.c
+@@ -14,6 +14,9 @@
+ #include <linux/clk.h>
+ #include <linux/delay.h>
+ #include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/nvmem-consumer.h>
++#include <linux/of.h>
+ #include <linux/platform_device.h>
+ #include <sound/pcm.h>
+ #include <sound/pcm_params.h>
+@@ -21,9 +24,6 @@
+ 
+ #include "mxs-builtin-codec.h"
+ 
+-#if defined(CONFIG_RTC_DRV_STMP)
+-void stmp3xxx_nvmem_write(u32 val, unsigned int offset);
+-#endif
+ 
+ #ifndef BF
+ #define BF(value, field) (((value) << BP_##field) & BM_##field)
+@@ -41,6 +41,8 @@ struct mxs_adc_priv {
+ 	void __iomem *ain_base;
+ 	void __iomem *aout_base;
+ 	struct clk *clk;
++	struct nvmem_device *rtc_nvmem;
++	struct mutex rtc_lock;	/* serialises RTC PERSISTENT0 read-modify-write */
+ 	unsigned int reg_cache_size;
+ 	short reg_cache_step;
+ 	short reg_word_size;
+@@ -667,6 +669,33 @@ static const struct snd_kcontrol_new mxs_snd_controls[] = {
+ };
+ /* END kcontrol */
+ 
++/*
++ * The RTC nvmem provider only exposes plain PERSISTENT0 reads and writes, so
++ * the SET/CLR registers are emulated with a locked read-modify-write.
++ */
++static void mxs_adc_rtc_pers0_update(struct mxs_adc_priv *mxs_adc, u32 mask,
++				     bool set)
++{
++	u32 val;
++	int ret;
++
++	mutex_lock(&mxs_adc->rtc_lock);
++	ret = nvmem_device_read(mxs_adc->rtc_nvmem, HW_RTC_PERSISTENT0,
++				sizeof(val), &val);
++	if (ret >= 0) {
++		if (set)
++			val |= mask;
++		else
++			val &= ~mask;
++		ret = nvmem_device_write(mxs_adc->rtc_nvmem,
++					 HW_RTC_PERSISTENT0, sizeof(val), &val);
++	}
++	mutex_unlock(&mxs_adc->rtc_lock);
++	if (ret < 0)
++		pr_warn("mxs-builtin-codec: RTC PERSISTENT0 update failed: %d\n",
++			ret);
++}
++
+ /* DAPM */
+ static int pga_event(struct snd_soc_dapm_widget *w,
+ 			struct snd_kcontrol *kcontrol, int event)
+@@ -679,21 +708,17 @@ static int pga_event(struct snd_soc_dapm_widget *w,
+ 		/* Prepare powering up HP and SPEAKER output */
+ 		__raw_writel(BM_AUDIOOUT_ANACTRL_HP_HOLD_GND,
+ 			mxs_adc->aout_base + HW_AUDIOOUT_ANACTRL_SET);
+-#if defined(CONFIG_RTC_DRV_STMP)
+-		stmp3xxx_nvmem_write(BM_RTC_PERSISTENT0_RELEASE_GND,
+-			HW_RTC_PERSISTENT0_SET);
++		mxs_adc_rtc_pers0_update(mxs_adc, BM_RTC_PERSISTENT0_RELEASE_GND,
++					 true);
+ 		msleep(100);
+-#endif
+ 		break;
+ 	case SND_SOC_DAPM_POST_PMU:
+ 		__raw_writel(BM_AUDIOOUT_ANACTRL_HP_HOLD_GND,
+ 			mxs_adc->aout_base + HW_AUDIOOUT_ANACTRL_CLR);
+ 		break;
+ 	case SND_SOC_DAPM_POST_PMD:
+-#if defined(CONFIG_RTC_DRV_STMP)
+-		stmp3xxx_nvmem_write(BM_RTC_PERSISTENT0_RELEASE_GND,
+-			HW_RTC_PERSISTENT0_CLR);
+-#endif
++		mxs_adc_rtc_pers0_update(mxs_adc, BM_RTC_PERSISTENT0_RELEASE_GND,
++					 false);
+ 		break;
+ 	}
+ 	return 0;
+@@ -702,19 +727,18 @@ static int pga_event(struct snd_soc_dapm_widget *w,
+ static int adc_event(struct snd_soc_dapm_widget *w,
+ 			struct snd_kcontrol *kcontrol, int event)
+ {
++	struct snd_soc_component *codec = w->dapm->component;
++	struct mxs_adc_priv *mxs_adc = snd_soc_component_get_drvdata(codec);
++
+ 	switch (event) {
+ 	case SND_SOC_DAPM_PRE_PMU:
+-#if defined(CONFIG_RTC_DRV_STMP)
+-		stmp3xxx_nvmem_write(BM_RTC_PERSISTENT0_RELEASE_GND,
+-			HW_RTC_PERSISTENT0_SET);
++		mxs_adc_rtc_pers0_update(mxs_adc, BM_RTC_PERSISTENT0_RELEASE_GND,
++					 true);
+ 		msleep(100);
+-#endif
+ 		break;
+ 	case SND_SOC_DAPM_POST_PMD:
+-#if defined(CONFIG_RTC_DRV_STMP)
+-		stmp3xxx_nvmem_write(BM_RTC_PERSISTENT0_RELEASE_GND,
+-			HW_RTC_PERSISTENT0_CLR);
+-#endif
++		mxs_adc_rtc_pers0_update(mxs_adc, BM_RTC_PERSISTENT0_RELEASE_GND,
++					 false);
+ 		break;
+ 	}
+ 	return 0;
+@@ -1032,6 +1056,26 @@ static struct snd_soc_component_driver mxs_codec_driver = {
+ /* END MXS-ADC Codec driver */
+ 
+ /* Underlying platform device that registers codec */
++/*
++ * The codec needs the RTC PERSISTENT0 register to release the HP ground.
++ * Get it through the nvmem provider referenced by the "nvmem" phandle;
++ * this defers probing until the RTC has registered it.
++ */
++static int mxs_adc_get_rtc(struct platform_device *pdev,
++			   struct mxs_adc_priv *mxs_adc)
++{
++	struct nvmem_device *nvmem;
++
++	nvmem = devm_nvmem_device_get(&pdev->dev, "rtc");
++	if (IS_ERR(nvmem))
++		return dev_err_probe(&pdev->dev, PTR_ERR(nvmem),
++				     "failed to get RTC nvmem\n");
++
++	mxs_adc->rtc_nvmem = nvmem;
++	mutex_init(&mxs_adc->rtc_lock);
++	return 0;
++}
++
+ static int mxs_adc_probe(struct platform_device *pdev)
+ {
+ 	struct mxs_adc_priv *mxs_adc;
+@@ -1042,6 +1086,10 @@ static int mxs_adc_probe(struct platform_device *pdev)
+ 	if (!mxs_adc)
+ 		return -ENOMEM;
+ 
++	ret = mxs_adc_get_rtc(pdev, mxs_adc);
++	if (ret)
++		return ret;
++
+ 	platform_set_drvdata(pdev, mxs_adc);
+ 
+ 	mxs_adc->reg_cache_size = ADC_REGNUM;
+diff --git a/sound/soc/mxs/Kconfig b/sound/soc/mxs/Kconfig
+index 920c824..a69005e 100644
+--- a/sound/soc/mxs/Kconfig
++++ b/sound/soc/mxs/Kconfig
+@@ -22,6 +22,7 @@ config SND_SOC_MXS_SGTL5000
+ config SND_MXS_SOC_BUILTIN
+ 	tristate "SoC Audio for Freescale i.MX23 built-in codec"
+ 	depends on ARCH_MXS
++	depends on NVMEM
+ 	select SND_SOC_GENERIC_DMAENGINE_PCM
+ 	select SND_SOC_MXS_BUILTIN_CODEC
+ 	help

@@ -1,0 +1,251 @@
+diff --git a/Documentation/devicetree/bindings/sound/fsl,imx23-audio-block.yaml b/Documentation/devicetree/bindings/sound/fsl,imx23-audio-block.yaml
+new file mode 100644
+index 0000000000..c3066a83d1
+--- /dev/null
++++ b/Documentation/devicetree/bindings/sound/fsl,imx23-audio-block.yaml
+@@ -0,0 +1,92 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/sound/fsl,imx23-audio-block.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: Freescale i.MX23 AUDIOOUT and AUDIOIN register blocks
++
++maintainers:
++  - Michal Ulianko <michal.ulianko@gmail.com>
++
++description:
++  The AUDIOOUT (DAC and headphone amplifier) and AUDIOIN (ADC) blocks of the
++  i.MX23. Registers are shared between the built-in codec driver and the
++  built-in CPU DAI driver, which both reach them through a syscon regmap.
++  The error interrupts belong to these blocks, so they are described here
++  and not on the sound nodes.
++
++select:
++  properties:
++    compatible:
++      contains:
++        enum:
++          - fsl,imx23-audioin
++          - fsl,imx23-audioout
++  required:
++    - compatible
++
++properties:
++  compatible:
++    items:
++      - enum:
++          - fsl,imx23-audioin
++          - fsl,imx23-audioout
++      - const: syscon
++
++  reg:
++    maxItems: 1
++
++  interrupts:
++    minItems: 1
++    maxItems: 2
++
++  interrupt-names:
++    minItems: 1
++    maxItems: 2
++
++required:
++  - compatible
++  - reg
++  - interrupts
++  - interrupt-names
++
++allOf:
++  - if:
++      properties:
++        compatible:
++          contains:
++            const: fsl,imx23-audioout
++    then:
++      properties:
++        interrupts:
++          minItems: 2
++        interrupt-names:
++          items:
++            - const: dac-error
++            - const: hp-short
++    else:
++      properties:
++        interrupts:
++          maxItems: 1
++        interrupt-names:
++          items:
++            - const: adc-error
++
++additionalProperties: false
++
++examples:
++  - |
++    audio-out@80048000 {
++        compatible = "fsl,imx23-audioout", "syscon";
++        reg = <0x80048000 0x2000>;
++        interrupts = <6>, <4>;
++        interrupt-names = "dac-error", "hp-short";
++    };
++
++    audio-in@8004c000 {
++        compatible = "fsl,imx23-audioin", "syscon";
++        reg = <0x8004c000 0x2000>;
++        interrupts = <8>;
++        interrupt-names = "adc-error";
++    };
+diff --git a/Documentation/devicetree/bindings/sound/fsl,mxs-builtin-cpu-dai.yaml b/Documentation/devicetree/bindings/sound/fsl,mxs-builtin-cpu-dai.yaml
+new file mode 100644
+index 0000000000..65cc525f8c
+--- /dev/null
++++ b/Documentation/devicetree/bindings/sound/fsl,mxs-builtin-cpu-dai.yaml
+@@ -0,0 +1,66 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/sound/fsl,mxs-builtin-cpu-dai.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: Freescale i.MX23 built-in audio CPU DAI
++
++maintainers:
++  - Michal Ulianko <michal.ulianko@gmail.com>
++
++description:
++  CPU DAI and DMA PCM of the i.MX23 built-in codec. It has no register range
++  of its own: it drives the AUDIOOUT and AUDIOIN blocks through their syscon
++  regmaps, takes the error interrupts from them and uses one APBX DMA channel
++  for each direction.
++
++allOf:
++  - $ref: dai-common.yaml#
++
++properties:
++  compatible:
++    const: fsl,mxs-builtin-cpu-dai
++
++  '#sound-dai-cells':
++    const: 0
++
++  fsl,audio-out:
++    $ref: /schemas/types.yaml#/definitions/phandle
++    description:
++      AUDIOOUT block. Provides the DAC registers, the DAC error and the
++      headphone short interrupts.
++
++  fsl,audio-in:
++    $ref: /schemas/types.yaml#/definitions/phandle
++    description:
++      AUDIOIN block. Provides the ADC registers and the ADC error interrupt.
++
++  dmas:
++    maxItems: 2
++
++  dma-names:
++    items:
++      - const: rx
++      - const: tx
++
++required:
++  - compatible
++  - '#sound-dai-cells'
++  - fsl,audio-out
++  - fsl,audio-in
++  - dmas
++  - dma-names
++
++unevaluatedProperties: false
++
++examples:
++  - |
++    audio-controller {
++        compatible = "fsl,mxs-builtin-cpu-dai";
++        #sound-dai-cells = <0>;
++        fsl,audio-out = <&audio_out>;
++        fsl,audio-in = <&audio_in>;
++        dmas = <&dma_apbx 0>, <&dma_apbx 1>;
++        dma-names = "rx", "tx";
++    };
+diff --git a/Documentation/devicetree/bindings/sound/fsl,mxs-builtin-codec.yaml b/Documentation/devicetree/bindings/sound/fsl,mxs-builtin-codec.yaml
+new file mode 100644
+index 0000000000..a5dc7d606a
+--- /dev/null
++++ b/Documentation/devicetree/bindings/sound/fsl,mxs-builtin-codec.yaml
+@@ -0,0 +1,75 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/sound/fsl,mxs-builtin-codec.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: Freescale i.MX23 built-in audio codec
++
++maintainers:
++  - Michal Ulianko <michal.ulianko@gmail.com>
++
++description:
++  DAC, ADC and headphone amplifier of the i.MX23. The registers are reached
++  through the syscon regmaps of the AUDIOOUT and AUDIOIN blocks. A bit of the
++  RTC PERSISTENT0 register must be set to release the headphone ground, which
++  is done through the nvmem provider of the RTC.
++
++allOf:
++  - $ref: dai-common.yaml#
++
++properties:
++  compatible:
++    const: fsl,mxs-builtin-codec
++
++  '#sound-dai-cells':
++    const: 0
++
++  fsl,audio-out:
++    $ref: /schemas/types.yaml#/definitions/phandle
++    description: AUDIOOUT block, see fsl,imx23-audio-block.yaml.
++
++  fsl,audio-in:
++    $ref: /schemas/types.yaml#/definitions/phandle
++    description: AUDIOIN block, see fsl,imx23-audio-block.yaml.
++
++  clocks:
++    maxItems: 1
++
++  clock-names:
++    const: filt
++
++  nvmem:
++    $ref: /schemas/types.yaml#/definitions/phandle-array
++    maxItems: 1
++    description: RTC nvmem provider holding PERSISTENT0.
++
++  nvmem-names:
++    const: rtc
++
++required:
++  - compatible
++  - '#sound-dai-cells'
++  - fsl,audio-out
++  - fsl,audio-in
++  - clocks
++  - clock-names
++  - nvmem
++  - nvmem-names
++
++unevaluatedProperties: false
++
++examples:
++  - |
++    #include <dt-bindings/clock/imx23-clock.h>
++
++    audio-codec {
++        compatible = "fsl,mxs-builtin-codec";
++        #sound-dai-cells = <0>;
++        fsl,audio-out = <&audio_out>;
++        fsl,audio-in = <&audio_in>;
++        clocks = <&clks IMX23_CLK_FILT>;
++        clock-names = "filt";
++        nvmem = <&rtc>;
++        nvmem-names = "rtc";
++    };
