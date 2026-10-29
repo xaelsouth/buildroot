@@ -1,0 +1,1313 @@
+--- /dev/null
++++ b/Documentation/devicetree/bindings/media/fsl,imx23-pxp.yaml
+@@ -0,0 +1,41 @@
++# SPDX-License-Identifier: (GPL-2.0 OR BSD-2-Clause)
++
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/media/fsl,imx23-pxp.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: Freescale i.MX23 Pixel Pipeline
++
++maintainers:
++  - Linux i.MX23 maintainers <linux-arm-kernel@lists.infradead.org>
++
++description:
++  The Pixel Pipeline (PXP) of the i.MX23 is a memory-to-memory engine that
++  supports scaling, colorspace conversion, flipping and rotation. It is an
++  older design than the PXP found on i.MX6UL and later SoCs.
++
++properties:
++  compatible:
++    const: fsl,imx23-pxp
++
++  reg:
++    maxItems: 1
++
++  interrupts:
++    maxItems: 1
++
++required:
++  - compatible
++  - reg
++  - interrupts
++
++additionalProperties: false
++
++examples:
++  - |
++    pxp@8002a000 {
++        compatible = "fsl,imx23-pxp";
++        reg = <0x8002a000 0x2000>;
++        interrupts = <57>;
++    };
+--- a/arch/arm/boot/dts/nxp/mxs/imx23.dtsi	2026-10-29 19:40:07.779260751 +1300
++++ b/arch/arm/boot/dts/nxp/mxs/imx23.dtsi	2026-10-29 19:40:17.654286817 +1300
+@@ -435,9 +435,10 @@
+ 				status = "okay";
+ 			};
+ 
+-			pxp@8002a000 {
++			pxp: pxp@8002a000 {
++				compatible = "fsl,imx23-pxp";
+ 				reg = <0x8002a000 0x2000>;
+-				status = "disabled";
++				interrupts = <57>;
+ 			};
+ 
+ 			efuse@8002c000 {
+--- a/drivers/media/platform/nxp/Kconfig	2026-10-29 19:40:22.985301190 +1300
++++ b/drivers/media/platform/nxp/Kconfig	2026-10-29 19:40:29.479318983 +1300
+@@ -53,6 +53,19 @@
+ 	  The i.MX Pixel Pipeline is a memory-to-memory engine for scaling,
+ 	  color space conversion, and rotation.
+ 
++config VIDEO_IMX23_PXP
++	tristate "NXP i.MX23 Pixel Pipeline (PXP)"
++	depends on V4L_MEM2MEM_DRIVERS
++	depends on VIDEO_DEV && (ARCH_MXS || COMPILE_TEST)
++	select VIDEOBUF2_DMA_CONTIG
++	select V4L2_MEM2MEM_DEV
++	help
++	  The i.MX23 Pixel Pipeline is a memory-to-memory engine for scaling,
++	  color space conversion, flipping and rotation of video frames.
++
++	  To compile this driver as a module, choose M here: the module
++	  will be called imx23-pxp.
++
+ config VIDEO_MX2_EMMAPRP
+ 	tristate "NXP MX2 eMMa-PrP support"
+ 	depends on V4L_MEM2MEM_DRIVERS
+--- a/drivers/media/platform/nxp/Makefile	2026-10-29 19:40:34.784333745 +1300
++++ b/drivers/media/platform/nxp/Makefile	2026-10-29 19:40:41.343352276 +1300
+@@ -7,5 +7,6 @@
+ obj-$(CONFIG_VIDEO_IMX7_CSI) += imx7-media-csi.o
+ obj-$(CONFIG_VIDEO_IMX8MQ_MIPI_CSI2) += imx8mq-mipi-csi2.o
+ obj-$(CONFIG_VIDEO_IMX_MIPI_CSIS) += imx-mipi-csis.o
++obj-$(CONFIG_VIDEO_IMX23_PXP) += imx23-pxp.o
+ obj-$(CONFIG_VIDEO_IMX_PXP) += imx-pxp.o
+ obj-$(CONFIG_VIDEO_MX2_EMMAPRP) += mx2_emmaprp.o
+--- /dev/null
++++ b/drivers/media/platform/nxp/imx23-pxp.c
+@@ -0,0 +1,1220 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * i.MX23 Pixel Pipeline (PXP) mem2mem scaler/CSC/rotator driver
++ *
++ * The i.MX23 PXP is the first generation of the block (RTL version 2.x) and
++ * differs substantially from the i.MX6ULL/i.MX7 one handled by imx-pxp.c:
++ *
++ *  - The S0 (video) input is either packed RGB or 3-plane YUV/YCbCr 4:2:0 or
++ *    4:2:2 and always uses a tightly packed layout (there is no stride).
++ *  - Only YUV sources go through the (bilinear) scaler, 1/2x - 4096x.
++ *  - The output is always RGB.
++ *  - All sizes are programmed in units of 8x8 pixel blocks.
++ *
++ * Only the S0 plane is used, the overlay engine is left disabled.
++ */
++
++#include <linux/delay.h>
++#include <linux/interrupt.h>
++#include <linux/io.h>
++#include <linux/iopoll.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/sched.h>
++#include <linux/slab.h>
++#include <linux/stmp_device.h>
++#include <linux/workqueue.h>
++
++#include <media/v4l2-ctrls.h>
++#include <media/v4l2-device.h>
++#include <media/v4l2-event.h>
++#include <media/v4l2-ioctl.h>
++#include <media/v4l2-mem2mem.h>
++#include <media/videobuf2-dma-contig.h>
++
++#define PXP_NAME		"imx23-pxp"
++
++#define MIN_DIM			8
++#define MAX_DIM			1024
++#define ALIGN_BITS		3 /* 8x8 pixel blocks */
++
++#define PXP_JOB_TIMEOUT_MS	1000
++
++#define HW_PXP_CTRL		0x000
++#define HW_PXP_CTRL_SET		0x004
++#define HW_PXP_CTRL_CLR		0x008
++#define HW_PXP_STAT		0x010
++#define HW_PXP_STAT_CLR		0x018
++#define HW_PXP_RGBBUF		0x020
++#define HW_PXP_RGBSIZE		0x040
++#define HW_PXP_S0BUF		0x050
++#define HW_PXP_S0UBUF		0x060
++#define HW_PXP_S0VBUF		0x070
++#define HW_PXP_S0PARAM		0x080
++#define HW_PXP_S0BACKGROUND	0x090
++#define HW_PXP_S0CROP		0x0a0
++#define HW_PXP_S0SCALE		0x0b0
++#define HW_PXP_S0OFFSET		0x0c0
++#define HW_PXP_CSCCOEFF0	0x0d0
++#define HW_PXP_CSCCOEFF1	0x0e0
++#define HW_PXP_CSCCOEFF2	0x0f0
++#define HW_PXP_S0COLORKEYLOW	0x180
++#define HW_PXP_S0COLORKEYHIGH	0x190
++#define HW_PXP_OLCOLORKEYLOW	0x1a0
++#define HW_PXP_OLCOLORKEYHIGH	0x1b0
++#define HW_PXP_VERSION		0x1f0
++
++#define BM_PXP_CTRL_SFTRST		BIT(31)
++#define BM_PXP_CTRL_CLKGATE		BIT(30)
++#define BM_PXP_CTRL_ALPHA_OUTPUT	BIT(22)
++#define BM_PXP_CTRL_CROP		BIT(19)
++#define BM_PXP_CTRL_SCALE		BIT(18)
++#define BP_PXP_CTRL_S0_FORMAT		12
++#define BM_PXP_CTRL_VFLIP		BIT(11)
++#define BM_PXP_CTRL_HFLIP		BIT(10)
++#define BP_PXP_CTRL_ROTATE		8
++#define BP_PXP_CTRL_OUTPUT_RGB_FORMAT	4
++#define BM_PXP_CTRL_IRQ_ENABLE		BIT(1)
++#define BM_PXP_CTRL_ENABLE		BIT(0)
++
++#define PXP_S0_FMT_RGB888		0x1
++#define PXP_S0_FMT_RGB565		0x4
++#define PXP_S0_FMT_RGB555		0x5
++#define PXP_S0_FMT_YUV422		0x8
++#define PXP_S0_FMT_YUV420		0x9
++
++#define PXP_OUT_FMT_ARGB8888		0x0
++#define PXP_OUT_FMT_RGB888		0x1
++#define PXP_OUT_FMT_RGB565		0x4
++#define PXP_OUT_FMT_RGB555		0x5
++
++#define BM_PXP_STAT_IRQ			BIT(0)
++#define BM_PXP_STAT_AXI_WRITE_ERROR	BIT(1)
++#define BM_PXP_STAT_AXI_READ_ERROR	BIT(2)
++#define PXP_STAT_ALL_IRQS		(BM_PXP_STAT_IRQ | \
++					 BM_PXP_STAT_AXI_WRITE_ERROR | \
++					 BM_PXP_STAT_AXI_READ_ERROR)
++
++#define PXP_BLOCKS(px)			((px) >> ALIGN_BITS)
++#define PXP_BLOCK_PARAM(x, y, w, h)	((((x) & 0xff) << 24) | \
++					 (((y) & 0xff) << 16) | \
++					 (((w) & 0xff) << 8) | ((h) & 0xff))
++
++/* Scale registers hold in/out as 2.12 fixed point; 2.0 is the downscale limit */
++#define PXP_SCALE_ONE			0x1000
++#define PXP_SCALE_MAX			0x2000
++
++#define PXP_CSC0(c0, uv_off, y_off)	((1u << 31) | ((c0) << 18) | \
++					 ((uv_off) << 9) | (y_off))
++#define PXP_CSC1(c1, c4)		(((c1) << 16) | (c4))
++#define PXP_CSC2(c2, c3)		(((c2) << 16) | (c3))
++
++#define MEM2MEM_CAPTURE		BIT(0)
++#define MEM2MEM_OUTPUT		BIT(1)
++
++#define dprintk(dev, fmt, arg...) \
++	v4l2_dbg(1, debug, &dev->v4l2_dev, "%s: " fmt, __func__, ## arg)
++
++static unsigned int debug;
++module_param(debug, uint, 0644);
++MODULE_PARM_DESC(debug, "activates debug info");
++
++struct pxp_fmt {
++	u32	fourcc;
++	int	depth;		/* average bits per pixel */
++	u8	types;
++	u8	hw_fmt;		/* S0_FORMAT for OUTPUT, OUTPUT_RGB_FORMAT for CAPTURE */
++	bool	yuv;
++	bool	alpha;
++	bool	swap_uv;	/* V plane precedes U plane */
++	u8	chroma_div;	/* chroma plane size = luma size / chroma_div */
++};
++
++static const struct pxp_fmt formats[] = {
++	{
++		.fourcc = V4L2_PIX_FMT_XBGR32,
++		.depth = 32,
++		.types = MEM2MEM_CAPTURE | MEM2MEM_OUTPUT,
++		/* the S0 and output codes happen to coincide */
++		.hw_fmt = PXP_S0_FMT_RGB888,
++	}, {
++		.fourcc = V4L2_PIX_FMT_ABGR32,
++		.depth = 32,
++		.types = MEM2MEM_CAPTURE,
++		.hw_fmt = PXP_OUT_FMT_ARGB8888,
++		.alpha = true,
++	}, {
++		.fourcc = V4L2_PIX_FMT_RGB565,
++		.depth = 16,
++		.types = MEM2MEM_CAPTURE | MEM2MEM_OUTPUT,
++		.hw_fmt = PXP_S0_FMT_RGB565,
++	}, {
++		.fourcc = V4L2_PIX_FMT_XRGB555,
++		.depth = 16,
++		.types = MEM2MEM_CAPTURE | MEM2MEM_OUTPUT,
++		.hw_fmt = PXP_S0_FMT_RGB555,
++	}, {
++		.fourcc = V4L2_PIX_FMT_YUV420,
++		.depth = 12,
++		.types = MEM2MEM_OUTPUT,
++		.hw_fmt = PXP_S0_FMT_YUV420,
++		.yuv = true,
++		.chroma_div = 4,
++	}, {
++		.fourcc = V4L2_PIX_FMT_YVU420,
++		.depth = 12,
++		.types = MEM2MEM_OUTPUT,
++		.hw_fmt = PXP_S0_FMT_YUV420,
++		.yuv = true,
++		.swap_uv = true,
++		.chroma_div = 4,
++	}, {
++		.fourcc = V4L2_PIX_FMT_YUV422P,
++		.depth = 16,
++		.types = MEM2MEM_OUTPUT,
++		.hw_fmt = PXP_S0_FMT_YUV422,
++		.yuv = true,
++		.chroma_div = 2,
++	},
++};
++
++#define NUM_FORMATS ARRAY_SIZE(formats)
++
++struct pxp_q_data {
++	unsigned int		width;
++	unsigned int		height;
++	unsigned int		bytesperline;
++	unsigned int		sizeimage;
++	unsigned int		sequence;
++	const struct pxp_fmt	*fmt;
++	enum v4l2_ycbcr_encoding ycbcr_enc;
++	enum v4l2_quantization	quant;
++};
++
++enum {
++	V4L2_M2M_SRC = 0,
++	V4L2_M2M_DST = 1,
++};
++
++struct pxp_ctx;
++
++struct pxp_dev {
++	struct v4l2_device	v4l2_dev;
++	struct video_device	vfd;
++#ifdef CONFIG_MEDIA_CONTROLLER
++	struct media_device	mdev;
++#endif
++
++	struct mutex		dev_mutex;
++	spinlock_t		lock;		/* protects curr */
++	struct pxp_ctx		*curr;		/* context owning the HW */
++	u32			irq_stat;
++	struct delayed_work	watchdog;
++
++	void __iomem		*base;
++	struct v4l2_m2m_dev	*m2m_dev;
++};
++
++struct pxp_ctx {
++	struct v4l2_fh		fh;
++	struct pxp_dev		*dev;
++	struct v4l2_ctrl_handler hdl;
++
++	bool			hflip;
++	bool			vflip;
++	unsigned int		rotation;	/* degrees */
++	u8			alpha;
++
++	enum v4l2_colorspace	colorspace;
++	enum v4l2_xfer_func	xfer_func;
++
++	struct pxp_q_data	q_data[2];
++};
++
++static inline struct pxp_ctx *file2ctx(struct file *file)
++{
++	return container_of(file->private_data, struct pxp_ctx, fh);
++}
++
++static struct pxp_q_data *get_q_data(struct pxp_ctx *ctx,
++				     enum v4l2_buf_type type)
++{
++	if (V4L2_TYPE_IS_OUTPUT(type))
++		return &ctx->q_data[V4L2_M2M_SRC];
++
++	return &ctx->q_data[V4L2_M2M_DST];
++}
++
++static inline u32 pxp_read(struct pxp_dev *dev, u32 reg)
++{
++	return readl(dev->base + reg);
++}
++
++static inline void pxp_write(struct pxp_dev *dev, u32 reg, u32 value)
++{
++	writel(value, dev->base + reg);
++}
++
++static const struct pxp_fmt *find_format(u32 fourcc, u8 type)
++{
++	unsigned int i;
++
++	for (i = 0; i < NUM_FORMATS; i++)
++		if (formats[i].fourcc == fourcc && (formats[i].types & type))
++			return &formats[i];
++
++	return NULL;
++}
++
++static inline bool pxp_swaps_dims(const struct pxp_ctx *ctx)
++{
++	return ctx->rotation == 90 || ctx->rotation == 270;
++}
++
++static inline u32 pxp_bytesperline(const struct pxp_fmt *fmt, u32 width)
++{
++	return fmt->yuv ? width : (width * fmt->depth) >> 3;
++}
++
++static inline u32 pxp_sizeimage(const struct pxp_fmt *fmt, u32 width, u32 height)
++{
++	return (fmt->depth * width * height) >> 3;
++}
++
++/*
++ * Constrain a capture size to what the scaler can do for the current source
++ * format, size and rotation: RGB sources cannot be scaled at all, YUV ones
++ * can be reduced by at most a factor of two.
++ */
++static void pxp_clamp_cap_size(struct pxp_ctx *ctx, u32 *w, u32 *h)
++{
++	struct pxp_q_data *src = &ctx->q_data[V4L2_M2M_SRC];
++	bool swap = pxp_swaps_dims(ctx);
++	u32 tw = swap ? src->height : src->width;
++	u32 th = swap ? src->width : src->height;
++
++	if (!src->fmt->yuv) {
++		*w = tw;
++		*h = th;
++		return;
++	}
++
++	*w = clamp(*w, ALIGN(tw / 2, 8), MAX_DIM);
++	*h = clamp(*h, ALIGN(th / 2, 8), MAX_DIM);
++}
++
++static void pxp_reset_cap_size(struct pxp_ctx *ctx)
++{
++	struct pxp_q_data *src = &ctx->q_data[V4L2_M2M_SRC];
++	struct pxp_q_data *dst = &ctx->q_data[V4L2_M2M_DST];
++	bool swap = pxp_swaps_dims(ctx);
++
++	dst->width = swap ? src->height : src->width;
++	dst->height = swap ? src->width : src->height;
++	dst->bytesperline = pxp_bytesperline(dst->fmt, dst->width);
++	dst->sizeimage = pxp_sizeimage(dst->fmt, dst->width, dst->height);
++}
++
++static void pxp_setup_csc(struct pxp_dev *dev, const struct pxp_q_data *src)
++{
++	u32 c0, c1, c2;
++
++	bool full = src->quant == V4L2_QUANTIZATION_FULL_RANGE;
++
++	if (src->ycbcr_enc == V4L2_YCBCR_ENC_709) {
++		if (full) {
++			c0 = PXP_CSC0(0x100, 0x180, 0x000);
++			c1 = PXP_CSC1(0x193, 0x1db);
++			c2 = PXP_CSC2(0x788, 0x7d0);
++		} else {
++			c0 = PXP_CSC0(0x12a, 0x180, 0x1f0);
++			c1 = PXP_CSC1(0x1cb, 0x21d);
++			c2 = PXP_CSC2(0x778, 0x7ca);
++		}
++	} else if (full) {
++		/* BT.601 full range (JFIF) */
++		c0 = PXP_CSC0(0x100, 0x180, 0x000);
++		c1 = PXP_CSC1(0x167, 0x1c5);
++		c2 = PXP_CSC2(0x749, 0x7a8);
++	} else {
++		/* BT.601 limited range, as given by the reference manual */
++		c0 = PXP_CSC0(0x12a, 0x180, 0x1f0);
++		c1 = PXP_CSC1(0x198, 0x204);
++		c2 = PXP_CSC2(0x730, 0x79c);
++	}
++
++	pxp_write(dev, HW_PXP_CSCCOEFF0, c0);
++	pxp_write(dev, HW_PXP_CSCCOEFF1, c1);
++	pxp_write(dev, HW_PXP_CSCCOEFF2, c2);
++}
++
++static void pxp_start(struct pxp_ctx *ctx, struct vb2_v4l2_buffer *in_vb,
++		      struct vb2_v4l2_buffer *out_vb)
++{
++	struct pxp_dev *dev = ctx->dev;
++	struct pxp_q_data *src = &ctx->q_data[V4L2_M2M_SRC];
++	struct pxp_q_data *dst = &ctx->q_data[V4L2_M2M_DST];
++	const struct pxp_fmt *sfmt = src->fmt;
++	const struct pxp_fmt *dfmt = dst->fmt;
++	bool swap = pxp_swaps_dims(ctx);
++	u32 ow = swap ? dst->height : dst->width;	/* before rotation */
++	u32 oh = swap ? dst->width : dst->height;
++	u32 xscale = PXP_SCALE_ONE, yscale = PXP_SCALE_ONE;
++	bool scale = false;
++	dma_addr_t in = vb2_dma_contig_plane_dma_addr(&in_vb->vb2_buf, 0);
++	dma_addr_t out = vb2_dma_contig_plane_dma_addr(&out_vb->vb2_buf, 0);
++	u32 luma = src->width * src->height;
++	u32 ctrl;
++
++	if (sfmt->yuv && (ow != src->width || oh != src->height)) {
++		scale = true;
++		xscale = min_t(u32, (src->width << 12) / ow, PXP_SCALE_MAX);
++		yscale = min_t(u32, (src->height << 12) / oh, PXP_SCALE_MAX);
++	}
++
++	ctrl = BM_PXP_CTRL_IRQ_ENABLE | BM_PXP_CTRL_ENABLE |
++	       (sfmt->hw_fmt << BP_PXP_CTRL_S0_FORMAT) |
++	       (dfmt->hw_fmt << BP_PXP_CTRL_OUTPUT_RGB_FORMAT);
++	if (ctx->hflip)
++		ctrl |= BM_PXP_CTRL_HFLIP;
++	if (ctx->vflip)
++		ctrl |= BM_PXP_CTRL_VFLIP;
++	ctrl |= ((ctx->rotation / 90) & 3) << BP_PXP_CTRL_ROTATE;
++	if (dfmt->alpha)
++		ctrl |= BM_PXP_CTRL_ALPHA_OUTPUT;
++	if (scale)
++		ctrl |= BM_PXP_CTRL_SCALE | BM_PXP_CTRL_CROP;
++
++	/* Make sure the block is neither in reset nor clock gated */
++	pxp_write(dev, HW_PXP_CTRL_CLR, BM_PXP_CTRL_SFTRST | BM_PXP_CTRL_CLKGATE);
++
++	pxp_write(dev, HW_PXP_S0BUF, in);
++	if (sfmt->yuv) {
++		dma_addr_t cb = in + luma;
++		dma_addr_t cr = cb + luma / sfmt->chroma_div;
++
++		pxp_write(dev, HW_PXP_S0UBUF, sfmt->swap_uv ? cr : cb);
++		pxp_write(dev, HW_PXP_S0VBUF, sfmt->swap_uv ? cb : cr);
++		pxp_setup_csc(dev, src);
++	}
++
++	pxp_write(dev, HW_PXP_S0PARAM,
++		  PXP_BLOCK_PARAM(0, 0, PXP_BLOCKS(src->width),
++				  PXP_BLOCKS(src->height)));
++	pxp_write(dev, HW_PXP_S0BACKGROUND, 0);
++	pxp_write(dev, HW_PXP_S0CROP,
++		  PXP_BLOCK_PARAM(0, 0, PXP_BLOCKS(ow), PXP_BLOCKS(oh)));
++	pxp_write(dev, HW_PXP_S0SCALE, (yscale << 16) | xscale);
++	pxp_write(dev, HW_PXP_S0OFFSET, 0);
++
++	/* Colour keying is disabled by low > high */
++	pxp_write(dev, HW_PXP_S0COLORKEYLOW, 0xffffff);
++	pxp_write(dev, HW_PXP_S0COLORKEYHIGH, 0);
++	pxp_write(dev, HW_PXP_OLCOLORKEYLOW, 0xffffff);
++	pxp_write(dev, HW_PXP_OLCOLORKEYHIGH, 0);
++
++	pxp_write(dev, HW_PXP_RGBBUF, out);
++	pxp_write(dev, HW_PXP_RGBSIZE, (ctx->alpha << 24) | (ow << 12) | oh);
++
++	dprintk(dev, "%ux%u %.4s -> %ux%u %.4s rot %u h%d v%d scale %#x/%#x\n",
++		src->width, src->height, (char *)&sfmt->fourcc, dst->width,
++		dst->height, (char *)&dfmt->fourcc, ctx->rotation, ctx->hflip,
++		ctx->vflip, xscale, yscale);
++
++	schedule_delayed_work(&dev->watchdog,
++			      msecs_to_jiffies(PXP_JOB_TIMEOUT_MS));
++	pxp_write(dev, HW_PXP_CTRL, ctrl);
++}
++
++static void pxp_hw_reset(struct pxp_dev *dev)
++{
++	int ret = stmp_reset_block(dev->base + HW_PXP_CTRL);
++
++	if (ret)
++		dev_err(dev->v4l2_dev.dev, "block reset failed: %d\n", ret);
++}
++
++static void pxp_job_finish(struct pxp_dev *dev, struct pxp_ctx *ctx,
++			   enum vb2_buffer_state state)
++{
++	struct vb2_v4l2_buffer *src_vb, *dst_vb;
++
++	/* Gate the block clock while idle; pxp_start() ungates it */
++	pxp_write(dev, HW_PXP_CTRL_SET, BM_PXP_CTRL_CLKGATE);
++
++	src_vb = v4l2_m2m_src_buf_remove(ctx->fh.m2m_ctx);
++	dst_vb = v4l2_m2m_dst_buf_remove(ctx->fh.m2m_ctx);
++
++	if (src_vb && dst_vb) {
++		v4l2_m2m_buf_copy_metadata(src_vb, dst_vb, true);
++		dst_vb->sequence = ctx->q_data[V4L2_M2M_DST].sequence++;
++		src_vb->sequence = ctx->q_data[V4L2_M2M_SRC].sequence++;
++	}
++	if (src_vb)
++		v4l2_m2m_buf_done(src_vb, state);
++	if (dst_vb)
++		v4l2_m2m_buf_done(dst_vb, state);
++
++	v4l2_m2m_job_finish(dev->m2m_dev, ctx->fh.m2m_ctx);
++}
++
++static void pxp_device_run(void *priv)
++{
++	struct pxp_ctx *ctx = priv;
++	struct pxp_dev *dev = ctx->dev;
++	struct vb2_v4l2_buffer *src_buf, *dst_buf;
++	unsigned long flags;
++
++	src_buf = v4l2_m2m_next_src_buf(ctx->fh.m2m_ctx);
++	dst_buf = v4l2_m2m_next_dst_buf(ctx->fh.m2m_ctx);
++
++	spin_lock_irqsave(&dev->lock, flags);
++	dev->curr = ctx;
++	spin_unlock_irqrestore(&dev->lock, flags);
++
++	pxp_start(ctx, src_buf, dst_buf);
++}
++
++static int pxp_job_ready(void *priv)
++{
++	struct pxp_ctx *ctx = priv;
++
++	return v4l2_m2m_num_src_bufs_ready(ctx->fh.m2m_ctx) >= 1 &&
++	       v4l2_m2m_num_dst_bufs_ready(ctx->fh.m2m_ctx) >= 1;
++}
++
++/* Takes ownership of the running job, if any. */
++static struct pxp_ctx *pxp_take_curr(struct pxp_dev *dev)
++{
++	struct pxp_ctx *ctx;
++	unsigned long flags;
++
++	spin_lock_irqsave(&dev->lock, flags);
++	ctx = dev->curr;
++	dev->curr = NULL;
++	spin_unlock_irqrestore(&dev->lock, flags);
++
++	return ctx;
++}
++
++static irqreturn_t pxp_irq_handler(int irq, void *dev_id)
++{
++	struct pxp_dev *dev = dev_id;
++	u32 stat = pxp_read(dev, HW_PXP_STAT) & PXP_STAT_ALL_IRQS;
++
++	if (!stat)
++		return IRQ_NONE;
++
++	pxp_write(dev, HW_PXP_STAT_CLR, stat);
++	dev->irq_stat = stat;
++
++	return IRQ_WAKE_THREAD;
++}
++
++static irqreturn_t pxp_irq_thread(int irq, void *dev_id)
++{
++	struct pxp_dev *dev = dev_id;
++	enum vb2_buffer_state state = VB2_BUF_STATE_DONE;
++	struct pxp_ctx *ctx;
++
++	ctx = pxp_take_curr(dev);
++	if (!ctx)
++		return IRQ_HANDLED;
++
++	cancel_delayed_work_sync(&dev->watchdog);
++
++	if (dev->irq_stat & (BM_PXP_STAT_AXI_READ_ERROR |
++			     BM_PXP_STAT_AXI_WRITE_ERROR)) {
++		dev_err(dev->v4l2_dev.dev, "AXI error, stat 0x%x\n",
++			dev->irq_stat);
++		state = VB2_BUF_STATE_ERROR;
++		pxp_hw_reset(dev);
++	}
++
++	pxp_job_finish(dev, ctx, state);
++
++	return IRQ_HANDLED;
++}
++
++static void pxp_watchdog(struct work_struct *work)
++{
++	struct pxp_dev *dev = container_of(work, struct pxp_dev, watchdog.work);
++	struct pxp_ctx *ctx = pxp_take_curr(dev);
++
++	if (!ctx)
++		return;
++
++	dev_err(dev->v4l2_dev.dev, "job timed out, resetting\n");
++	pxp_hw_reset(dev);
++	pxp_job_finish(dev, ctx, VB2_BUF_STATE_ERROR);
++}
++
++/*
++ * video ioctls
++ */
++static int pxp_querycap(struct file *file, void *priv,
++			struct v4l2_capability *cap)
++{
++	strscpy(cap->driver, PXP_NAME, sizeof(cap->driver));
++	strscpy(cap->card, "i.MX23 PXP", sizeof(cap->card));
++	return 0;
++}
++
++static int pxp_enum_fmt(struct v4l2_fmtdesc *f, u8 type)
++{
++	unsigned int i, num = 0;
++
++	for (i = 0; i < NUM_FORMATS; i++) {
++		if (!(formats[i].types & type))
++			continue;
++		if (num++ == f->index) {
++			f->pixelformat = formats[i].fourcc;
++			return 0;
++		}
++	}
++
++	return -EINVAL;
++}
++
++static int pxp_enum_fmt_vid_cap(struct file *file, void *priv,
++				struct v4l2_fmtdesc *f)
++{
++	return pxp_enum_fmt(f, MEM2MEM_CAPTURE);
++}
++
++static int pxp_enum_fmt_vid_out(struct file *file, void *priv,
++				struct v4l2_fmtdesc *f)
++{
++	return pxp_enum_fmt(f, MEM2MEM_OUTPUT);
++}
++
++static int pxp_g_fmt(struct file *file, void *priv, struct v4l2_format *f)
++{
++	struct pxp_ctx *ctx = file2ctx(file);
++	struct pxp_q_data *q_data = get_q_data(ctx, f->type);
++
++	f->fmt.pix.width	= q_data->width;
++	f->fmt.pix.height	= q_data->height;
++	f->fmt.pix.field	= V4L2_FIELD_NONE;
++	f->fmt.pix.pixelformat	= q_data->fmt->fourcc;
++	f->fmt.pix.bytesperline	= q_data->bytesperline;
++	f->fmt.pix.sizeimage	= q_data->sizeimage;
++	f->fmt.pix.colorspace	= ctx->colorspace;
++	f->fmt.pix.xfer_func	= ctx->xfer_func;
++	f->fmt.pix.ycbcr_enc	= q_data->ycbcr_enc;
++	f->fmt.pix.quantization	= q_data->quant;
++
++	return 0;
++}
++
++static void pxp_fill_colorimetry(struct pxp_ctx *ctx, struct v4l2_format *f,
++				 const struct pxp_fmt *fmt)
++{
++	if (fmt->yuv) {
++		if (f->fmt.pix.colorspace == V4L2_COLORSPACE_DEFAULT)
++			f->fmt.pix.colorspace = V4L2_COLORSPACE_SMPTE170M;
++		/* BT.601 and BT.709 coefficients are programmed */
++		if (f->fmt.pix.ycbcr_enc != V4L2_YCBCR_ENC_709)
++			f->fmt.pix.ycbcr_enc = V4L2_YCBCR_ENC_601;
++		if (f->fmt.pix.quantization != V4L2_QUANTIZATION_FULL_RANGE)
++			f->fmt.pix.quantization = V4L2_QUANTIZATION_LIM_RANGE;
++	} else {
++		if (f->fmt.pix.colorspace == V4L2_COLORSPACE_DEFAULT)
++			f->fmt.pix.colorspace = V4L2_COLORSPACE_SRGB;
++		f->fmt.pix.ycbcr_enc = V4L2_YCBCR_ENC_DEFAULT;
++		f->fmt.pix.quantization = V4L2_QUANTIZATION_FULL_RANGE;
++	}
++	if (f->fmt.pix.xfer_func == V4L2_XFER_FUNC_DEFAULT)
++		f->fmt.pix.xfer_func =
++			V4L2_MAP_XFER_FUNC_DEFAULT(f->fmt.pix.colorspace);
++}
++
++static void pxp_finish_fmt(struct v4l2_format *f, const struct pxp_fmt *fmt)
++{
++	v4l_bound_align_image(&f->fmt.pix.width, MIN_DIM, MAX_DIM, ALIGN_BITS,
++			      &f->fmt.pix.height, MIN_DIM, MAX_DIM, ALIGN_BITS,
++			      0);
++	f->fmt.pix.pixelformat = fmt->fourcc;
++	f->fmt.pix.bytesperline = pxp_bytesperline(fmt, f->fmt.pix.width);
++	f->fmt.pix.sizeimage = pxp_sizeimage(fmt, f->fmt.pix.width,
++					     f->fmt.pix.height);
++	f->fmt.pix.field = V4L2_FIELD_NONE;
++}
++
++static int pxp_try_fmt_vid_cap(struct file *file, void *priv,
++			       struct v4l2_format *f)
++{
++	struct pxp_ctx *ctx = file2ctx(file);
++	const struct pxp_fmt *fmt = find_format(f->fmt.pix.pixelformat,
++						MEM2MEM_CAPTURE);
++	u32 w, h;
++
++	if (!fmt)
++		fmt = &formats[0];
++
++	v4l_bound_align_image(&f->fmt.pix.width, MIN_DIM, MAX_DIM, ALIGN_BITS,
++			      &f->fmt.pix.height, MIN_DIM, MAX_DIM, ALIGN_BITS,
++			      0);
++	w = f->fmt.pix.width;
++	h = f->fmt.pix.height;
++	pxp_clamp_cap_size(ctx, &w, &h);
++	f->fmt.pix.width = w;
++	f->fmt.pix.height = h;
++
++	/* The colorimetry of the capture queue follows the output queue */
++	f->fmt.pix.colorspace = ctx->colorspace;
++	f->fmt.pix.xfer_func = ctx->xfer_func;
++	f->fmt.pix.ycbcr_enc = ctx->q_data[V4L2_M2M_SRC].ycbcr_enc;
++	f->fmt.pix.quantization = ctx->q_data[V4L2_M2M_SRC].quant;
++
++	pxp_finish_fmt(f, fmt);
++
++	return 0;
++}
++
++static int pxp_try_fmt_vid_out(struct file *file, void *priv,
++			       struct v4l2_format *f)
++{
++	struct pxp_ctx *ctx = file2ctx(file);
++	const struct pxp_fmt *fmt = find_format(f->fmt.pix.pixelformat,
++						MEM2MEM_OUTPUT);
++
++	if (!fmt)
++		fmt = &formats[0];
++
++	pxp_fill_colorimetry(ctx, f, fmt);
++	pxp_finish_fmt(f, fmt);
++
++	return 0;
++}
++
++static int pxp_s_fmt(struct pxp_ctx *ctx, struct v4l2_format *f)
++{
++	struct pxp_q_data *q_data;
++	struct vb2_queue *vq;
++
++	vq = v4l2_m2m_get_vq(ctx->fh.m2m_ctx, f->type);
++	if (!vq)
++		return -EINVAL;
++
++	q_data = get_q_data(ctx, f->type);
++	if (vb2_is_busy(vq)) {
++		v4l2_err(&ctx->dev->v4l2_dev, "%s queue busy\n", __func__);
++		return -EBUSY;
++	}
++
++	q_data->fmt = find_format(f->fmt.pix.pixelformat,
++				  V4L2_TYPE_IS_OUTPUT(f->type) ?
++				  MEM2MEM_OUTPUT : MEM2MEM_CAPTURE);
++	q_data->width = f->fmt.pix.width;
++	q_data->height = f->fmt.pix.height;
++	q_data->bytesperline = f->fmt.pix.bytesperline;
++	q_data->sizeimage = f->fmt.pix.sizeimage;
++	q_data->ycbcr_enc = f->fmt.pix.ycbcr_enc;
++	q_data->quant = f->fmt.pix.quantization;
++
++	return 0;
++}
++
++static int pxp_s_fmt_vid_cap(struct file *file, void *priv,
++			     struct v4l2_format *f)
++{
++	int ret = pxp_try_fmt_vid_cap(file, priv, f);
++
++	if (ret)
++		return ret;
++
++	return pxp_s_fmt(file2ctx(file), f);
++}
++
++static int pxp_s_fmt_vid_out(struct file *file, void *priv,
++			     struct v4l2_format *f)
++{
++	struct pxp_ctx *ctx = file2ctx(file);
++	struct pxp_q_data *dst = &ctx->q_data[V4L2_M2M_DST];
++	int ret;
++
++	ret = pxp_try_fmt_vid_out(file, priv, f);
++	if (ret)
++		return ret;
++
++	ret = pxp_s_fmt(ctx, f);
++	if (ret)
++		return ret;
++
++	ctx->colorspace = f->fmt.pix.colorspace;
++	ctx->xfer_func = f->fmt.pix.xfer_func;
++	dst->ycbcr_enc = f->fmt.pix.ycbcr_enc;
++	dst->quant = f->fmt.pix.quantization;
++
++	/* Start from an unscaled capture size, userspace may then override it */
++	if (!vb2_is_busy(v4l2_m2m_get_dst_vq(ctx->fh.m2m_ctx)))
++		pxp_reset_cap_size(ctx);
++	else
++		pxp_clamp_cap_size(ctx, &dst->width, &dst->height);
++
++	return 0;
++}
++
++static int pxp_enum_framesizes(struct file *file, void *fh,
++			       struct v4l2_frmsizeenum *fsize)
++{
++	if (fsize->index > 0)
++		return -EINVAL;
++
++	if (!find_format(fsize->pixel_format, MEM2MEM_OUTPUT | MEM2MEM_CAPTURE))
++		return -EINVAL;
++
++	fsize->type = V4L2_FRMSIZE_TYPE_STEPWISE;
++	fsize->stepwise.min_width = MIN_DIM;
++	fsize->stepwise.max_width = MAX_DIM;
++	fsize->stepwise.step_width = 1 << ALIGN_BITS;
++	fsize->stepwise.min_height = MIN_DIM;
++	fsize->stepwise.max_height = MAX_DIM;
++	fsize->stepwise.step_height = 1 << ALIGN_BITS;
++
++	return 0;
++}
++
++static int pxp_s_ctrl(struct v4l2_ctrl *ctrl)
++{
++	struct pxp_ctx *ctx = container_of(ctrl->handler, struct pxp_ctx, hdl);
++
++	switch (ctrl->id) {
++	case V4L2_CID_HFLIP:
++		ctx->hflip = ctrl->val;
++		break;
++	case V4L2_CID_VFLIP:
++		ctx->vflip = ctrl->val;
++		break;
++	case V4L2_CID_ROTATE: {
++		bool swapped = ctrl->val == 90 || ctrl->val == 270;
++
++		if (swapped == pxp_swaps_dims(ctx)) {
++			ctx->rotation = ctrl->val;
++			break;
++		}
++		/* The capture geometry depends on the orientation */
++		if (vb2_is_busy(v4l2_m2m_get_dst_vq(ctx->fh.m2m_ctx)))
++			return -EBUSY;
++		ctx->rotation = ctrl->val;
++		pxp_reset_cap_size(ctx);
++		break;
++	}
++	case V4L2_CID_ALPHA_COMPONENT:
++		ctx->alpha = ctrl->val;
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	return 0;
++}
++
++static const struct v4l2_ctrl_ops pxp_ctrl_ops = {
++	.s_ctrl = pxp_s_ctrl,
++};
++
++static const struct v4l2_ioctl_ops pxp_ioctl_ops = {
++	.vidioc_querycap	= pxp_querycap,
++
++	.vidioc_enum_fmt_vid_cap = pxp_enum_fmt_vid_cap,
++	.vidioc_g_fmt_vid_cap	= pxp_g_fmt,
++	.vidioc_try_fmt_vid_cap	= pxp_try_fmt_vid_cap,
++	.vidioc_s_fmt_vid_cap	= pxp_s_fmt_vid_cap,
++
++	.vidioc_enum_fmt_vid_out = pxp_enum_fmt_vid_out,
++	.vidioc_g_fmt_vid_out	= pxp_g_fmt,
++	.vidioc_try_fmt_vid_out	= pxp_try_fmt_vid_out,
++	.vidioc_s_fmt_vid_out	= pxp_s_fmt_vid_out,
++
++	.vidioc_enum_framesizes	= pxp_enum_framesizes,
++
++	.vidioc_reqbufs		= v4l2_m2m_ioctl_reqbufs,
++	.vidioc_querybuf	= v4l2_m2m_ioctl_querybuf,
++	.vidioc_qbuf		= v4l2_m2m_ioctl_qbuf,
++	.vidioc_dqbuf		= v4l2_m2m_ioctl_dqbuf,
++	.vidioc_prepare_buf	= v4l2_m2m_ioctl_prepare_buf,
++	.vidioc_create_bufs	= v4l2_m2m_ioctl_create_bufs,
++	.vidioc_expbuf		= v4l2_m2m_ioctl_expbuf,
++
++	.vidioc_streamon	= v4l2_m2m_ioctl_streamon,
++	.vidioc_streamoff	= v4l2_m2m_ioctl_streamoff,
++
++	.vidioc_subscribe_event	= v4l2_ctrl_subscribe_event,
++	.vidioc_unsubscribe_event = v4l2_event_unsubscribe,
++};
++
++/*
++ * Queue operations
++ */
++static int pxp_queue_setup(struct vb2_queue *vq, unsigned int *nbuffers,
++			   unsigned int *nplanes, unsigned int sizes[],
++			   struct device *alloc_devs[])
++{
++	struct pxp_ctx *ctx = vb2_get_drv_priv(vq);
++	struct pxp_q_data *q_data = get_q_data(ctx, vq->type);
++
++	if (*nplanes)
++		return sizes[0] < q_data->sizeimage ? -EINVAL : 0;
++
++	*nplanes = 1;
++	sizes[0] = q_data->sizeimage;
++
++	return 0;
++}
++
++static int pxp_buf_prepare(struct vb2_buffer *vb)
++{
++	struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb);
++	struct pxp_ctx *ctx = vb2_get_drv_priv(vb->vb2_queue);
++	struct pxp_q_data *q_data = get_q_data(ctx, vb->vb2_queue->type);
++
++	if (V4L2_TYPE_IS_OUTPUT(vb->vb2_queue->type)) {
++		if (vbuf->field == V4L2_FIELD_ANY)
++			vbuf->field = V4L2_FIELD_NONE;
++		if (vbuf->field != V4L2_FIELD_NONE)
++			return -EINVAL;
++	}
++
++	if (vb2_plane_size(vb, 0) < q_data->sizeimage)
++		return -EINVAL;
++
++	vb2_set_plane_payload(vb, 0, q_data->sizeimage);
++
++	return 0;
++}
++
++static void pxp_buf_queue(struct vb2_buffer *vb)
++{
++	struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb);
++	struct pxp_ctx *ctx = vb2_get_drv_priv(vb->vb2_queue);
++
++	v4l2_m2m_buf_queue(ctx->fh.m2m_ctx, vbuf);
++}
++
++static int pxp_start_streaming(struct vb2_queue *q, unsigned int count)
++{
++	struct pxp_ctx *ctx = vb2_get_drv_priv(q);
++
++	get_q_data(ctx, q->type)->sequence = 0;
++
++	return 0;
++}
++
++static void pxp_stop_streaming(struct vb2_queue *q)
++{
++	struct pxp_ctx *ctx = vb2_get_drv_priv(q);
++	struct vb2_v4l2_buffer *vbuf;
++
++	for (;;) {
++		if (V4L2_TYPE_IS_OUTPUT(q->type))
++			vbuf = v4l2_m2m_src_buf_remove(ctx->fh.m2m_ctx);
++		else
++			vbuf = v4l2_m2m_dst_buf_remove(ctx->fh.m2m_ctx);
++		if (!vbuf)
++			return;
++		v4l2_m2m_buf_done(vbuf, VB2_BUF_STATE_ERROR);
++	}
++}
++
++static const struct vb2_ops pxp_qops = {
++	.queue_setup	 = pxp_queue_setup,
++	.buf_prepare	 = pxp_buf_prepare,
++	.buf_queue	 = pxp_buf_queue,
++	.start_streaming = pxp_start_streaming,
++	.stop_streaming  = pxp_stop_streaming,
++	.wait_prepare	 = vb2_ops_wait_prepare,
++	.wait_finish	 = vb2_ops_wait_finish,
++};
++
++static int queue_init(void *priv, struct vb2_queue *src_vq,
++		      struct vb2_queue *dst_vq)
++{
++	struct pxp_ctx *ctx = priv;
++	int ret;
++
++	src_vq->type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
++	src_vq->io_modes = VB2_MMAP | VB2_DMABUF;
++	src_vq->drv_priv = ctx;
++	src_vq->buf_struct_size = sizeof(struct v4l2_m2m_buffer);
++	src_vq->ops = &pxp_qops;
++	src_vq->mem_ops = &vb2_dma_contig_memops;
++	src_vq->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_COPY;
++	src_vq->lock = &ctx->dev->dev_mutex;
++	src_vq->dev = ctx->dev->v4l2_dev.dev;
++
++	ret = vb2_queue_init(src_vq);
++	if (ret)
++		return ret;
++
++	dst_vq->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
++	dst_vq->io_modes = VB2_MMAP | VB2_DMABUF;
++	dst_vq->drv_priv = ctx;
++	dst_vq->buf_struct_size = sizeof(struct v4l2_m2m_buffer);
++	dst_vq->ops = &pxp_qops;
++	dst_vq->mem_ops = &vb2_dma_contig_memops;
++	dst_vq->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_COPY;
++	dst_vq->lock = &ctx->dev->dev_mutex;
++	dst_vq->dev = ctx->dev->v4l2_dev.dev;
++
++	return vb2_queue_init(dst_vq);
++}
++
++/*
++ * File operations
++ */
++static int pxp_open(struct file *file)
++{
++	struct pxp_dev *dev = video_drvdata(file);
++	struct pxp_ctx *ctx;
++	struct v4l2_ctrl_handler *hdl;
++	int rc = 0;
++
++	if (mutex_lock_interruptible(&dev->dev_mutex))
++		return -ERESTARTSYS;
++
++	ctx = kzalloc(sizeof(*ctx), GFP_KERNEL);
++	if (!ctx) {
++		rc = -ENOMEM;
++		goto open_unlock;
++	}
++
++	v4l2_fh_init(&ctx->fh, video_devdata(file));
++	file->private_data = &ctx->fh;
++	ctx->dev = dev;
++	ctx->alpha = 255;
++
++	hdl = &ctx->hdl;
++	v4l2_ctrl_handler_init(hdl, 4);
++	v4l2_ctrl_new_std(hdl, &pxp_ctrl_ops, V4L2_CID_HFLIP, 0, 1, 1, 0);
++	v4l2_ctrl_new_std(hdl, &pxp_ctrl_ops, V4L2_CID_VFLIP, 0, 1, 1, 0);
++	v4l2_ctrl_new_std(hdl, &pxp_ctrl_ops, V4L2_CID_ROTATE, 0, 270, 90, 0);
++	v4l2_ctrl_new_std(hdl, &pxp_ctrl_ops, V4L2_CID_ALPHA_COMPONENT,
++			  0, 255, 1, 255);
++	if (hdl->error) {
++		rc = hdl->error;
++		v4l2_ctrl_handler_free(hdl);
++		v4l2_fh_exit(&ctx->fh);
++		kfree(ctx);
++		goto open_unlock;
++	}
++	ctx->fh.ctrl_handler = hdl;
++
++	/* Default: 640x480 YUV 4:2:0 -> XBGR32, untransformed */
++	ctx->q_data[V4L2_M2M_SRC].fmt = find_format(V4L2_PIX_FMT_YUV420,
++						    MEM2MEM_OUTPUT);
++	ctx->q_data[V4L2_M2M_SRC].width = 640;
++	ctx->q_data[V4L2_M2M_SRC].height = 480;
++	ctx->q_data[V4L2_M2M_SRC].bytesperline = 640;
++	ctx->q_data[V4L2_M2M_SRC].sizeimage =
++		pxp_sizeimage(ctx->q_data[V4L2_M2M_SRC].fmt, 640, 480);
++	ctx->q_data[V4L2_M2M_SRC].ycbcr_enc = V4L2_YCBCR_ENC_601;
++	ctx->q_data[V4L2_M2M_SRC].quant = V4L2_QUANTIZATION_LIM_RANGE;
++	ctx->q_data[V4L2_M2M_DST].fmt = &formats[0];
++	ctx->q_data[V4L2_M2M_DST].quant = V4L2_QUANTIZATION_LIM_RANGE;
++	ctx->q_data[V4L2_M2M_DST].ycbcr_enc = V4L2_YCBCR_ENC_601;
++	ctx->colorspace = V4L2_COLORSPACE_SMPTE170M;
++	ctx->xfer_func = V4L2_XFER_FUNC_709;
++	pxp_reset_cap_size(ctx);
++
++	ctx->fh.m2m_ctx = v4l2_m2m_ctx_init(dev->m2m_dev, ctx, &queue_init);
++	if (IS_ERR(ctx->fh.m2m_ctx)) {
++		rc = PTR_ERR(ctx->fh.m2m_ctx);
++		v4l2_ctrl_handler_free(hdl);
++		v4l2_fh_exit(&ctx->fh);
++		kfree(ctx);
++		goto open_unlock;
++	}
++
++	v4l2_fh_add(&ctx->fh);
++
++	dprintk(dev, "Created instance %p, m2m_ctx %p\n", ctx, ctx->fh.m2m_ctx);
++
++open_unlock:
++	mutex_unlock(&dev->dev_mutex);
++	return rc;
++}
++
++static int pxp_release(struct file *file)
++{
++	struct pxp_dev *dev = video_drvdata(file);
++	struct pxp_ctx *ctx = file2ctx(file);
++
++	dprintk(dev, "Releasing instance %p\n", ctx);
++
++	v4l2_fh_del(&ctx->fh);
++	v4l2_fh_exit(&ctx->fh);
++	v4l2_ctrl_handler_free(&ctx->hdl);
++	mutex_lock(&dev->dev_mutex);
++	v4l2_m2m_ctx_release(ctx->fh.m2m_ctx);
++	mutex_unlock(&dev->dev_mutex);
++	kfree(ctx);
++
++	return 0;
++}
++
++static const struct v4l2_file_operations pxp_fops = {
++	.owner		= THIS_MODULE,
++	.open		= pxp_open,
++	.release	= pxp_release,
++	.poll		= v4l2_m2m_fop_poll,
++	.unlocked_ioctl	= video_ioctl2,
++	.mmap		= v4l2_m2m_fop_mmap,
++};
++
++static const struct video_device pxp_videodev = {
++	.name		= PXP_NAME,
++	.vfl_dir	= VFL_DIR_M2M,
++	.fops		= &pxp_fops,
++	.device_caps	= V4L2_CAP_VIDEO_M2M | V4L2_CAP_STREAMING,
++	.ioctl_ops	= &pxp_ioctl_ops,
++	.minor		= -1,
++	.release	= video_device_release_empty,
++};
++
++static const struct v4l2_m2m_ops m2m_ops = {
++	.device_run	= pxp_device_run,
++	.job_ready	= pxp_job_ready,
++};
++
++static int pxp_probe(struct platform_device *pdev)
++{
++	struct pxp_dev *dev;
++	struct video_device *vfd;
++	u32 version;
++	int irq, ret;
++
++	dev = devm_kzalloc(&pdev->dev, sizeof(*dev), GFP_KERNEL);
++	if (!dev)
++		return -ENOMEM;
++
++	dev->base = devm_platform_ioremap_resource(pdev, 0);
++	if (IS_ERR(dev->base))
++		return PTR_ERR(dev->base);
++
++	irq = platform_get_irq(pdev, 0);
++	if (irq < 0)
++		return irq;
++
++	ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));
++	if (ret)
++		return ret;
++
++	spin_lock_init(&dev->lock);
++	mutex_init(&dev->dev_mutex);
++	INIT_DELAYED_WORK(&dev->watchdog, pxp_watchdog);
++
++	ret = stmp_reset_block(dev->base + HW_PXP_CTRL);
++	if (ret)
++		return dev_err_probe(&pdev->dev, ret, "PXP reset failed\n");
++
++	version = pxp_read(dev, HW_PXP_VERSION);
++	dev_info(&pdev->dev, "PXP version %u.%u\n", version >> 24,
++		 (version >> 16) & 0xff);
++	pxp_write(dev, HW_PXP_CTRL_SET, BM_PXP_CTRL_CLKGATE);
++
++	ret = devm_request_threaded_irq(&pdev->dev, irq, pxp_irq_handler,
++					pxp_irq_thread, IRQF_ONESHOT,
++					dev_name(&pdev->dev), dev);
++	if (ret)
++		return dev_err_probe(&pdev->dev, ret, "failed to request irq\n");
++
++	ret = v4l2_device_register(&pdev->dev, &dev->v4l2_dev);
++	if (ret)
++		return ret;
++
++	dev->vfd = pxp_videodev;
++	vfd = &dev->vfd;
++	vfd->lock = &dev->dev_mutex;
++	vfd->v4l2_dev = &dev->v4l2_dev;
++	video_set_drvdata(vfd, dev);
++	platform_set_drvdata(pdev, dev);
++
++	dev->m2m_dev = v4l2_m2m_init(&m2m_ops);
++	if (IS_ERR(dev->m2m_dev)) {
++		v4l2_err(&dev->v4l2_dev, "Failed to init mem2mem device\n");
++		ret = PTR_ERR(dev->m2m_dev);
++		goto err_v4l2;
++	}
++
++	ret = video_register_device(vfd, VFL_TYPE_VIDEO, -1);
++	if (ret) {
++		v4l2_err(&dev->v4l2_dev, "Failed to register video device\n");
++		goto err_m2m;
++	}
++	v4l2_info(&dev->v4l2_dev, "Device registered as /dev/video%d\n",
++		  vfd->num);
++
++#ifdef CONFIG_MEDIA_CONTROLLER
++	dev->mdev.dev = &pdev->dev;
++	strscpy(dev->mdev.model, PXP_NAME, sizeof(dev->mdev.model));
++	media_device_init(&dev->mdev);
++	dev->v4l2_dev.mdev = &dev->mdev;
++
++	ret = v4l2_m2m_register_media_controller(dev->m2m_dev, vfd,
++						 MEDIA_ENT_F_PROC_VIDEO_PIXEL_FORMATTER);
++	if (ret) {
++		dev_err(&pdev->dev, "Failed to initialize media device\n");
++		goto err_vfd;
++	}
++
++	ret = media_device_register(&dev->mdev);
++	if (ret) {
++		dev_err(&pdev->dev, "Failed to register media device\n");
++		goto err_m2m_mc;
++	}
++#endif
++
++	return 0;
++
++#ifdef CONFIG_MEDIA_CONTROLLER
++err_m2m_mc:
++	v4l2_m2m_unregister_media_controller(dev->m2m_dev);
++err_vfd:
++	video_unregister_device(vfd);
++#endif
++err_m2m:
++	v4l2_m2m_release(dev->m2m_dev);
++err_v4l2:
++	v4l2_device_unregister(&dev->v4l2_dev);
++
++	return ret;
++}
++
++static void pxp_remove(struct platform_device *pdev)
++{
++	struct pxp_dev *dev = platform_get_drvdata(pdev);
++
++#ifdef CONFIG_MEDIA_CONTROLLER
++	media_device_unregister(&dev->mdev);
++	v4l2_m2m_unregister_media_controller(dev->m2m_dev);
++#endif
++	video_unregister_device(&dev->vfd);
++	cancel_delayed_work_sync(&dev->watchdog);
++	v4l2_m2m_release(dev->m2m_dev);
++	v4l2_device_unregister(&dev->v4l2_dev);
++
++	pxp_write(dev, HW_PXP_CTRL_SET, BM_PXP_CTRL_CLKGATE | BM_PXP_CTRL_SFTRST);
++}
++
++static const struct of_device_id pxp_dt_ids[] = {
++	{ .compatible = "fsl,imx23-pxp" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, pxp_dt_ids);
++
++static struct platform_driver pxp_driver = {
++	.probe		= pxp_probe,
++	.remove_new	= pxp_remove,
++	.driver		= {
++		.name	= PXP_NAME,
++		.of_match_table = pxp_dt_ids,
++	},
++};
++
++module_platform_driver(pxp_driver);
++
++MODULE_DESCRIPTION("i.MX23 PXP mem2mem scaler/CSC/rotator");
++MODULE_LICENSE("GPL");
