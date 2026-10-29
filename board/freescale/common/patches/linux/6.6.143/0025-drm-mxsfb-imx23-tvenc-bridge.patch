@@ -1,0 +1,514 @@
+--- a/drivers/gpu/drm/mxsfb/Kconfig
++++ b/drivers/gpu/drm/mxsfb/Kconfig
+@@ -21,6 +21,15 @@
+ 
+ 	  If M is selected the module will be called mxsfb.
+ 
++config DRM_MXSFB_TVENC
++	bool "i.MX23 composite TV output (PAL/NTSC)"
++	depends on DRM_MXSFB && ARCH_MXS
++	select STMP_DEVICE
++	help
++	  Choose this option to drive the on-chip TV encoder of the i.MX23
++	  from the LCDIF. The output (LCD, TV PAL or TV NTSC) is selected
++	  with the mxsfb.output= module parameter.
++
+ config DRM_IMX_LCDIF
+ 	tristate "i.MX LCDIFv3 LCD controller"
+ 	depends on DRM && OF
+--- a/drivers/gpu/drm/mxsfb/Makefile
++++ b/drivers/gpu/drm/mxsfb/Makefile
+@@ -1,5 +1,6 @@
+ # SPDX-License-Identifier: GPL-2.0-only
+ mxsfb-y := mxsfb_drv.o mxsfb_kms.o
++mxsfb-$(CONFIG_DRM_MXSFB_TVENC) += mxsfb_tvenc.o
+ obj-$(CONFIG_DRM_MXSFB)	+= mxsfb.o
+ imx-lcdif-y := lcdif_drv.o lcdif_kms.o
+ obj-$(CONFIG_DRM_IMX_LCDIF) += imx-lcdif.o
+--- a/drivers/gpu/drm/mxsfb/mxsfb_drv.c
++++ b/drivers/gpu/drm/mxsfb/mxsfb_drv.c
+@@ -32,6 +32,7 @@
+ 
+ #include "mxsfb_drv.h"
+ #include "mxsfb_regs.h"
++#include "mxsfb_tvenc.h"
+ 
+ enum mxsfb_devtype {
+ 	MXSFB_V3,
+@@ -43,6 +44,35 @@
+ 	MXSFB_V6,
+ };
+ 
++enum mxsfb_output {
++	MXSFB_OUTPUT_LCD,
++	MXSFB_OUTPUT_TV_PAL,
++	MXSFB_OUTPUT_TV_NTSC,
++};
++
++static const char * const mxsfb_output_names[] = {
++	[MXSFB_OUTPUT_LCD] = "lcd",
++	[MXSFB_OUTPUT_TV_PAL] = "tv_pal",
++	[MXSFB_OUTPUT_TV_NTSC] = "tv_ntsc",
++};
++
++static char *mxsfb_output = "lcd";
++module_param_named(output, mxsfb_output, charp, 0444);
++MODULE_PARM_DESC(output, "Display output: lcd (default), tv_pal or tv_ntsc (i.MX23 only)");
++
++static int mxsfb_get_output(struct device *dev)
++{
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(mxsfb_output_names); i++)
++		if (!strcmp(mxsfb_output, mxsfb_output_names[i]))
++			return i;
++
++	dev_warn(dev, "Unknown output '%s', using lcd\n", mxsfb_output);
++
++	return MXSFB_OUTPUT_LCD;
++}
++
+ static const struct mxsfb_devdata mxsfb_devdata[] = {
+ 	[MXSFB_V3] = {
+ 		.transfer_count	= LCDC_V3_TRANSFER_COUNT,
+@@ -120,13 +150,26 @@
+ 	struct drm_connector_list_iter iter;
+ 	struct drm_panel *panel;
+ 	struct drm_bridge *bridge;
++	int output = mxsfb_get_output(drm->dev);
+ 	int ret;
+ 
+-	ret = drm_of_find_panel_or_bridge(drm->dev->of_node, 0, 0, &panel,
+-					  &bridge);
++	/* Endpoint 0 is the LCD panel, endpoint 1 the TV encoder */
++	ret = drm_of_find_panel_or_bridge(drm->dev->of_node, 0,
++					  output == MXSFB_OUTPUT_LCD ? 0 : 1,
++					  &panel, &bridge);
+ 	if (ret)
+ 		return ret;
+ 
++	if (output != MXSFB_OUTPUT_LCD) {
++		if (!bridge || !mxsfb_bridge_is_tvenc(bridge))
++			return dev_err_probe(drm->dev, -ENODEV,
++					     "No TV encoder on LCDIF endpoint 1\n");
++
++		mxsfb_tvenc_set_standard(bridge,
++					 output == MXSFB_OUTPUT_TV_NTSC ?
++					 MXSFB_TV_NTSC : MXSFB_TV_PAL);
++	}
++
+ 	if (panel) {
+ 		bridge = devm_drm_panel_bridge_add_typed(drm->dev, panel,
+ 							 DRM_MODE_CONNECTOR_DPI);
+@@ -233,6 +276,10 @@
+ 	if (IS_ERR(mxsfb->clk))
+ 		return PTR_ERR(mxsfb->clk);
+ 
++	mxsfb->clk_ref_pix = devm_clk_get_optional(drm->dev, "ref_pix");
++	if (IS_ERR(mxsfb->clk_ref_pix))
++		return PTR_ERR(mxsfb->clk_ref_pix);
++
+ 	mxsfb->clk_axi = devm_clk_get_optional(drm->dev, "axi");
+ 	if (IS_ERR(mxsfb->clk_axi))
+ 		return PTR_ERR(mxsfb->clk_axi);
+@@ -425,7 +472,27 @@
+ 	},
+ };
+ 
+-drm_module_platform_driver(mxsfb_platform_driver);
++static struct platform_driver * const mxsfb_drivers[] = {
++#ifdef CONFIG_DRM_MXSFB_TVENC
++	&mxsfb_tvenc_driver,
++#endif
++	&mxsfb_platform_driver,
++};
++
++static int __init mxsfb_init(void)
++{
++	if (drm_firmware_drivers_only())
++		return -ENODEV;
++
++	return platform_register_drivers(mxsfb_drivers, ARRAY_SIZE(mxsfb_drivers));
++}
++module_init(mxsfb_init);
++
++static void __exit mxsfb_exit(void)
++{
++	platform_unregister_drivers(mxsfb_drivers, ARRAY_SIZE(mxsfb_drivers));
++}
++module_exit(mxsfb_exit);
+ 
+ MODULE_AUTHOR("Marek Vasut <marex@denx.de>");
+ MODULE_DESCRIPTION("Freescale MXS DRM/KMS driver");
+--- /dev/null
++++ b/drivers/gpu/drm/mxsfb/mxsfb_tvenc.c
+@@ -0,0 +1,329 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/*
++ * i.MX23 TV encoder (TVENC) DRM bridge.
++ *
++ * The encoder takes ITU-R BT.656 4:2:2 YCbCr from the LCDIF in DVI mode and
++ * generates a composite PAL-B or NTSC-M signal on the on-chip video DAC.
++ *
++ * Register programming follows the i.MX23 reference manual, chapter 19, and
++ * the Freescale 2.6.28 BSP driver (arch/arm/mach-stmp3xxx/tvenc.c).
++ */
++
++#include <linux/clk.h>
++#include <linux/io.h>
++#include <linux/media-bus-format.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/slab.h>
++#include <linux/stmp_device.h>
++
++#include <drm/drm_atomic_state_helper.h>
++#include <drm/drm_bridge.h>
++#include <drm/drm_modeset_helper_vtables.h>
++#include <drm/drm_connector.h>
++#include <drm/drm_modes.h>
++#include <drm/drm_probe_helper.h>
++
++#include "mxsfb_tvenc.h"
++
++#define TVENC_CTRL		0x000
++#define TVENC_CONFIG		0x010
++#define TVENC_FILTCTRL		0x020
++#define TVENC_SYNCOFFSET	0x030
++#define TVENC_COLORSUB0		0x0c0
++#define TVENC_COLORBURST	0x140
++#define TVENC_MACROVISION0	0x150
++#define TVENC_MACROVISION4	0x190
++#define TVENC_DACCTRL		0x1a0
++#define TVENC_VDACTEST		0x1c0
++
++#define TVENC_CTRL_CLKGATE	BIT(30)
++
++#define TVENC_CONFIG_NTSC	0x0c000240
++#define TVENC_CONFIG_PAL	0x0c114041 /* PAL_SHAPE, YGAIN_SEL=PAL, CGAIN=PAL */
++#define TVENC_FILTCTRL_DEFAULT	0x00080000
++/* Pixels per line minus one */
++#define TVENC_SYNCOFFSET_NTSC	857
++#define TVENC_SYNCOFFSET_PAL	863
++#define TVENC_COLORSUB0_NTSC	0x21f07c1f
++#define TVENC_COLORSUB0_PAL	0x2a098acb
++#define TVENC_COLORBURST_NTSC	0xc8000000
++#define TVENC_COLORBURST_PAL	0xd62a0000
++#define TVENC_VDACTEST_DEFAULT	0x00001000
++#define TVENC_DACCTRL_ON	0x000c1130
++
++/*
++ * The pixel clock of the BT.656 stream is 27 MHz (two bytes per 13.5 MHz
++ * pixel). The LCDIF interlaces the progressive frame buffer on its own, so the
++ * modes are advertised as progressive frames at the frame rate.
++ */
++static const struct drm_display_mode mxsfb_tvenc_modes[] = {
++	[MXSFB_TV_PAL] = {
++		DRM_MODE("720x576", DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED,
++			 13500, 720, 732, 796, 864, 0, 576, 581, 586, 625, 0, 0),
++	},
++	[MXSFB_TV_NTSC] = {
++		DRM_MODE("720x480", DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED,
++			 13500, 720, 736, 798, 858, 0, 480, 489, 495, 525, 0, 0),
++	},
++};
++
++struct mxsfb_tvenc {
++	struct device *dev;
++	void __iomem *base;
++	struct clk *clk_tv27m;
++	struct clk *clk_tv108m;
++	struct drm_bridge bridge;
++	struct drm_connector connector;
++	enum mxsfb_tv_standard standard;
++	bool enabled;
++};
++
++static inline struct mxsfb_tvenc *bridge_to_tvenc(struct drm_bridge *bridge)
++{
++	return container_of(bridge, struct mxsfb_tvenc, bridge);
++}
++
++static inline struct mxsfb_tvenc *connector_to_tvenc(struct drm_connector *conn)
++{
++	return container_of(conn, struct mxsfb_tvenc, connector);
++}
++
++static int mxsfb_tvenc_connector_get_modes(struct drm_connector *connector)
++{
++	struct mxsfb_tvenc *tvenc = connector_to_tvenc(connector);
++	struct drm_display_mode *mode;
++
++	mode = drm_mode_duplicate(connector->dev,
++				  &mxsfb_tvenc_modes[tvenc->standard]);
++	if (!mode)
++		return 0;
++
++	drm_mode_probed_add(connector, mode);
++
++	return 1;
++}
++
++static const struct drm_connector_helper_funcs mxsfb_tvenc_connector_helper_funcs = {
++	.get_modes = mxsfb_tvenc_connector_get_modes,
++};
++
++static const struct drm_connector_funcs mxsfb_tvenc_connector_funcs = {
++	.reset = drm_atomic_helper_connector_reset,
++	.fill_modes = drm_helper_probe_single_connector_modes,
++	.destroy = drm_connector_cleanup,
++	.atomic_duplicate_state = drm_atomic_helper_connector_duplicate_state,
++	.atomic_destroy_state = drm_atomic_helper_connector_destroy_state,
++};
++
++static int mxsfb_tvenc_attach(struct drm_bridge *bridge,
++			      enum drm_bridge_attach_flags flags)
++{
++	struct mxsfb_tvenc *tvenc = bridge_to_tvenc(bridge);
++	struct drm_connector *connector = &tvenc->connector;
++	int ret;
++
++	if (flags & DRM_BRIDGE_ATTACH_NO_CONNECTOR)
++		return -EINVAL;
++
++	drm_connector_helper_add(connector,
++				 &mxsfb_tvenc_connector_helper_funcs);
++	ret = drm_connector_init(bridge->dev, connector,
++				 &mxsfb_tvenc_connector_funcs,
++				 DRM_MODE_CONNECTOR_Composite);
++	if (ret)
++		return ret;
++
++	return drm_connector_attach_encoder(connector, bridge->encoder);
++}
++
++static enum drm_mode_status
++mxsfb_tvenc_mode_valid(struct drm_bridge *bridge,
++		       const struct drm_display_info *info,
++		       const struct drm_display_mode *mode)
++{
++	struct mxsfb_tvenc *tvenc = bridge_to_tvenc(bridge);
++	const struct drm_display_mode *ref = &mxsfb_tvenc_modes[tvenc->standard];
++
++	if (mode->hdisplay != ref->hdisplay || mode->vdisplay != ref->vdisplay ||
++	    mode->htotal != ref->htotal || mode->vtotal != ref->vtotal ||
++	    mode->clock != ref->clock)
++		return MODE_BAD;
++
++	return MODE_OK;
++}
++
++static u32 *mxsfb_tvenc_get_input_bus_fmts(struct drm_bridge *bridge,
++					   struct drm_bridge_state *bridge_state,
++					   struct drm_crtc_state *crtc_state,
++					   struct drm_connector_state *conn_state,
++					   u32 output_fmt,
++					   unsigned int *num_input_fmts)
++{
++	u32 *fmts;
++
++	fmts = kmalloc(sizeof(*fmts), GFP_KERNEL);
++	if (!fmts) {
++		*num_input_fmts = 0;
++		return NULL;
++	}
++
++	/* The LCDIF sends CbYCrY on an 8-bit bus in BT.656 framing. */
++	fmts[0] = MEDIA_BUS_FMT_UYVY8_2X8;
++	*num_input_fmts = 1;
++
++	return fmts;
++}
++
++static void mxsfb_tvenc_hw_enable(struct mxsfb_tvenc *tvenc)
++{
++	bool pal = tvenc->standard == MXSFB_TV_PAL;
++	void __iomem *base = tvenc->base;
++	int i;
++
++	stmp_reset_block(base + TVENC_CTRL);
++
++	writel(0, base + TVENC_CTRL);
++	writel(pal ? TVENC_CONFIG_PAL : TVENC_CONFIG_NTSC,
++	       base + TVENC_CONFIG);
++	writel(TVENC_FILTCTRL_DEFAULT, base + TVENC_FILTCTRL);
++	writel(pal ? TVENC_SYNCOFFSET_PAL : TVENC_SYNCOFFSET_NTSC,
++	       base + TVENC_SYNCOFFSET);
++	writel(pal ? TVENC_COLORSUB0_PAL : TVENC_COLORSUB0_NTSC,
++	       base + TVENC_COLORSUB0);
++	writel(pal ? TVENC_COLORBURST_PAL : TVENC_COLORBURST_NTSC,
++	       base + TVENC_COLORBURST);
++	writel(TVENC_VDACTEST_DEFAULT, base + TVENC_VDACTEST);
++
++	/* Macrovision has to be off */
++	for (i = TVENC_MACROVISION0; i <= TVENC_MACROVISION4; i += 0x10)
++		writel(0, base + i);
++
++	writel(TVENC_DACCTRL_ON, base + TVENC_DACCTRL);
++}
++
++static void mxsfb_tvenc_atomic_enable(struct drm_bridge *bridge,
++				      struct drm_bridge_state *old_bridge_state)
++{
++	struct mxsfb_tvenc *tvenc = bridge_to_tvenc(bridge);
++	int ret;
++
++	if (tvenc->enabled)
++		return;
++
++	ret = clk_prepare_enable(tvenc->clk_tv27m);
++	if (ret)
++		goto err;
++
++	ret = clk_prepare_enable(tvenc->clk_tv108m);
++	if (ret) {
++		clk_disable_unprepare(tvenc->clk_tv27m);
++		goto err;
++	}
++
++	mxsfb_tvenc_hw_enable(tvenc);
++	tvenc->enabled = true;
++
++	return;
++
++err:
++	dev_err(tvenc->dev, "Failed to enable clocks: %d\n", ret);
++}
++
++static void mxsfb_tvenc_atomic_disable(struct drm_bridge *bridge,
++				       struct drm_bridge_state *old_bridge_state)
++{
++	struct mxsfb_tvenc *tvenc = bridge_to_tvenc(bridge);
++
++	if (!tvenc->enabled)
++		return;
++
++	writel(0, tvenc->base + TVENC_DACCTRL);
++	writel(TVENC_CTRL_CLKGATE, tvenc->base + TVENC_CTRL + STMP_OFFSET_REG_SET);
++
++	clk_disable_unprepare(tvenc->clk_tv108m);
++	clk_disable_unprepare(tvenc->clk_tv27m);
++	tvenc->enabled = false;
++}
++
++static const struct drm_bridge_funcs mxsfb_tvenc_bridge_funcs = {
++	.attach = mxsfb_tvenc_attach,
++	.mode_valid = mxsfb_tvenc_mode_valid,
++	.atomic_enable = mxsfb_tvenc_atomic_enable,
++	.atomic_disable = mxsfb_tvenc_atomic_disable,
++	.atomic_duplicate_state = drm_atomic_helper_bridge_duplicate_state,
++	.atomic_destroy_state = drm_atomic_helper_bridge_destroy_state,
++	.atomic_reset = drm_atomic_helper_bridge_reset,
++	.atomic_get_input_bus_fmts = mxsfb_tvenc_get_input_bus_fmts,
++};
++
++bool mxsfb_bridge_is_tvenc(struct drm_bridge *bridge)
++{
++	return bridge->funcs == &mxsfb_tvenc_bridge_funcs;
++}
++
++void mxsfb_tvenc_set_standard(struct drm_bridge *bridge,
++			      enum mxsfb_tv_standard standard)
++{
++	bridge_to_tvenc(bridge)->standard = standard;
++}
++
++static int mxsfb_tvenc_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct mxsfb_tvenc *tvenc;
++
++	tvenc = devm_kzalloc(dev, sizeof(*tvenc), GFP_KERNEL);
++	if (!tvenc)
++		return -ENOMEM;
++
++	tvenc->dev = dev;
++
++	tvenc->base = devm_platform_ioremap_resource(pdev, 0);
++	if (IS_ERR(tvenc->base))
++		return PTR_ERR(tvenc->base);
++
++	tvenc->clk_tv27m = devm_clk_get(dev, "tv27m");
++	if (IS_ERR(tvenc->clk_tv27m))
++		return dev_err_probe(dev, PTR_ERR(tvenc->clk_tv27m),
++				     "Failed to get tv27m clock\n");
++
++	tvenc->clk_tv108m = devm_clk_get(dev, "tv108m");
++	if (IS_ERR(tvenc->clk_tv108m))
++		return dev_err_probe(dev, PTR_ERR(tvenc->clk_tv108m),
++				     "Failed to get tv108m clock\n");
++
++	tvenc->standard = MXSFB_TV_PAL;
++
++	tvenc->bridge.funcs = &mxsfb_tvenc_bridge_funcs;
++	tvenc->bridge.of_node = dev->of_node;
++	tvenc->bridge.type = DRM_MODE_CONNECTOR_Composite;
++
++	platform_set_drvdata(pdev, tvenc);
++	drm_bridge_add(&tvenc->bridge);
++
++	return 0;
++}
++
++static void mxsfb_tvenc_remove(struct platform_device *pdev)
++{
++	struct mxsfb_tvenc *tvenc = platform_get_drvdata(pdev);
++
++	drm_bridge_remove(&tvenc->bridge);
++}
++
++static const struct of_device_id mxsfb_tvenc_dt_ids[] = {
++	{ .compatible = "fsl,imx23-tvenc", },
++	{ /* sentinel */ }
++};
++MODULE_DEVICE_TABLE(of, mxsfb_tvenc_dt_ids);
++
++struct platform_driver mxsfb_tvenc_driver = {
++	.probe = mxsfb_tvenc_probe,
++	.remove_new = mxsfb_tvenc_remove,
++	.driver = {
++		.name = "mxsfb-tvenc",
++		.of_match_table = mxsfb_tvenc_dt_ids,
++	},
++};
+--- /dev/null
++++ b/drivers/gpu/drm/mxsfb/mxsfb_tvenc.h
+@@ -0,0 +1,36 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/*
++ * i.MX23 TV encoder (TVENC) DRM bridge.
++ */
++
++#ifndef __MXSFB_TVENC_H__
++#define __MXSFB_TVENC_H__
++
++#include <linux/errno.h>
++#include <linux/platform_device.h>
++
++struct drm_bridge;
++
++enum mxsfb_tv_standard {
++	MXSFB_TV_PAL,
++	MXSFB_TV_NTSC,
++};
++
++#if IS_ENABLED(CONFIG_DRM_MXSFB_TVENC)
++extern struct platform_driver mxsfb_tvenc_driver;
++bool mxsfb_bridge_is_tvenc(struct drm_bridge *bridge);
++void mxsfb_tvenc_set_standard(struct drm_bridge *bridge,
++			      enum mxsfb_tv_standard standard);
++#else
++static inline bool mxsfb_bridge_is_tvenc(struct drm_bridge *bridge)
++{
++	return false;
++}
++
++static inline void mxsfb_tvenc_set_standard(struct drm_bridge *bridge,
++					    enum mxsfb_tv_standard standard)
++{
++}
++#endif
++
++#endif /* __MXSFB_TVENC_H__ */
+

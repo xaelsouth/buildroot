@@ -1,0 +1,294 @@
+--- a/drivers/gpu/drm/mxsfb/mxsfb_drv.h
++++ b/drivers/gpu/drm/mxsfb/mxsfb_drv.h
+@@ -31,6 +31,7 @@
+ 
+ 	void __iomem			*base;	/* registers */
+ 	struct clk			*clk;
++	struct clk			*clk_ref_pix;
+ 	struct clk			*clk_axi;
+ 	struct clk			*clk_disp_axi;
+ 
+@@ -47,6 +48,9 @@
+ 	struct drm_bridge		*bridge;
+ 
+ 	bool				crc_active;
++
++	/* Output is ITU-R BT.656 for the TV encoder instead of a parallel panel */
++	bool				dvi_mode;
+ };
+ 
+ static inline struct mxsfb_drm_private *
+--- a/drivers/gpu/drm/mxsfb/mxsfb_regs.h
++++ b/drivers/gpu/drm/mxsfb/mxsfb_regs.h
+@@ -29,6 +29,18 @@
+ #define LCDC_V4_CRC_STAT		0x1a0
+ #define LCDC_V4_DEBUG0			0x1d0
+ #define LCDC_V3_DEBUG0			0x1f0
++#define LCDC_V3_DVICTRL0		0xc0
++#define LCDC_V3_DVICTRL1		0xd0
++#define LCDC_V3_DVICTRL2		0xe0
++#define LCDC_V3_DVICTRL3		0xf0
++#define LCDC_V3_DVICTRL4		0x100
++#define LCDC_V3_CSC_COEFF0		0x110
++#define LCDC_V3_CSC_COEFF1		0x120
++#define LCDC_V3_CSC_COEFF2		0x130
++#define LCDC_V3_CSC_COEFF3		0x140
++#define LCDC_V3_CSC_COEFF4		0x150
++#define LCDC_V3_CSC_OFFSET		0x160
++#define LCDC_V3_CSC_LIMIT		0x170
+ #define LCDC_AS_CTRL			0x210
+ #define LCDC_AS_BUF			0x220
+ #define LCDC_AS_NEXT_BUF		0x230
+@@ -37,6 +49,8 @@
+ 
+ #define CTRL_SFTRST			BIT(31)
+ #define CTRL_CLKGATE			BIT(30)
++#define CTRL_YCBCR422_INPUT		BIT(29)
++#define CTRL_DVI_MODE			BIT(20)
+ #define CTRL_BYPASS_COUNT		BIT(19)
+ #define CTRL_VSYNC_MODE			BIT(18)
+ #define CTRL_DOTCLK_MODE		BIT(17)
+@@ -50,6 +64,7 @@
+ #define CTRL_WORD_LENGTH_8		(1 << 8)
+ #define CTRL_WORD_LENGTH_18		(2 << 8)
+ #define CTRL_WORD_LENGTH_24		(3 << 8)
++#define CTRL_RGB_TO_YCBCR422_CSC	BIT(7)
+ #define CTRL_MASTER			BIT(5)
+ #define CTRL_DF16			BIT(3)
+ #define CTRL_DF18			BIT(2)
+@@ -57,7 +72,9 @@
+ #define CTRL_RUN			BIT(0)
+ 
+ #define CTRL1_RECOVER_ON_UNDERFLOW	BIT(24)
++#define CTRL1_INTERLACE_FIELDS		BIT(23)
+ #define CTRL1_FIFO_CLEAR		BIT(21)
++#define CTRL1_IRQ_ON_ALTERNATE_FIELDS	BIT(20)
+ #define CTRL1_SET_BYTE_PACKAGING(x)	(((x) & 0xf) << 16)
+ #define CTRL1_GET_BYTE_PACKAGING(x)	(((x) >> 16) & 0xf)
+ #define CTRL1_CUR_FRAME_DONE_IRQ_EN	BIT(13)
+@@ -102,6 +119,31 @@
+ #define VDCTRL4_SYNC_SIGNALS_ON		BIT(18)
+ #define SET_DOTCLK_H_VALID_DATA_CNT(x)	((x) & 0x3ffff)
+ 
++/* ITU-R BT.656 (DVI) mode, i.MX23 only */
++#define DVICTRL0_H_ACTIVE_CNT(x)	(((x) & 0x7ff) << 20)
++#define DVICTRL0_H_BLANKING_CNT(x)	(((x) & 0x3ff) << 10)
++#define DVICTRL0_V_LINES_CNT(x)		((x) & 0x3ff)
++#define DVICTRL1_F1_START_LINE(x)	(((x) & 0x3ff) << 20)
++#define DVICTRL1_F1_END_LINE(x)		(((x) & 0x3ff) << 10)
++#define DVICTRL1_F2_START_LINE(x)	((x) & 0x3ff)
++#define DVICTRL2_F2_END_LINE(x)		(((x) & 0x3ff) << 20)
++#define DVICTRL2_V1_BLANK_START_LINE(x)	(((x) & 0x3ff) << 10)
++#define DVICTRL2_V1_BLANK_END_LINE(x)	((x) & 0x3ff)
++#define DVICTRL3_V2_BLANK_START_LINE(x)	(((x) & 0x3ff) << 16)
++#define DVICTRL3_V2_BLANK_END_LINE(x)	((x) & 0x3ff)
++#define DVICTRL4_Y_FILL_VALUE(x)	(((x) & 0xff) << 24)
++#define DVICTRL4_CB_FILL_VALUE(x)	(((x) & 0xff) << 16)
++#define DVICTRL4_CR_FILL_VALUE(x)	(((x) & 0xff) << 8)
++#define DVICTRL4_H_FILL_CNT(x)		((x) & 0xff)
++
++#define CSC_COEFF0_C0(x)		(((x) & 0x3ff) << 16)
++#define CSC_COEFF0_SUBSAMPLE_COSITED	3
++#define CSC_COEFF_PAIR(hi, lo)		((((hi) & 0x3ff) << 16) | ((lo) & 0x3ff))
++#define CSC_OFFSET(cbcr, y)		((((cbcr) & 0x1ff) << 16) | ((y) & 0x1ff))
++#define CSC_LIMIT(cbcr_min, cbcr_max, y_min, y_max) \
++	((((cbcr_min) & 0xff) << 24) | (((cbcr_max) & 0xff) << 16) | \
++	 (((y_min) & 0xff) << 8) | ((y_max) & 0xff))
++
+ #define DEBUG0_HSYNC			BIT(26)
+ #define DEBUG0_VSYNC			BIT(25)
+ 
+--- a/drivers/gpu/drm/mxsfb/mxsfb_kms.c
++++ b/drivers/gpu/drm/mxsfb/mxsfb_kms.c
+@@ -88,6 +88,16 @@
+ 	case MEDIA_BUS_FMT_RGB888_1X24:
+ 		ctrl |= CTRL_BUS_WIDTH_24;
+ 		break;
++	case MEDIA_BUS_FMT_UYVY8_2X8:
++		/*
++		 * BT.656 for the TV encoder: the LCDIF converts RGB to
++		 * YCbCr 4:2:2 and fetches the odd and even lines in
++		 * alternate fields from the progressive frame buffer.
++		 */
++		ctrl |= CTRL_BUS_WIDTH_8 | CTRL_DVI_MODE |
++			CTRL_RGB_TO_YCBCR422_CSC;
++		ctrl1 |= CTRL1_INTERLACE_FIELDS | CTRL1_IRQ_ON_ALTERNATE_FIELDS;
++		break;
+ 	default:
+ 		dev_err(drm->dev, "Unknown media bus format 0x%x\n", bus_format);
+ 		break;
+@@ -148,6 +158,89 @@
+ 
+ }
+ 
++/*
++ * The pixel divider is fed from the 24 MHz crystal by default and cannot
++ * reach 27 MHz, so switch its mux to ref_pix and run that at 10x the rate.
++ */
++static void mxsfb_set_dvi_clock(struct mxsfb_drm_private *mxsfb,
++				unsigned long rate)
++{
++	struct clk *sel = clk_get_parent(clk_get_parent(mxsfb->clk));
++	int ret;
++
++	if (mxsfb->clk_ref_pix && sel) {
++		ret = clk_set_rate(mxsfb->clk_ref_pix, rate * 10);
++		if (!ret)
++			ret = clk_set_parent(sel, mxsfb->clk_ref_pix);
++		if (ret)
++			dev_warn(mxsfb->drm->dev, "Failed to select ref_pix: %d\n", ret);
++	}
++
++	clk_set_rate(mxsfb->clk, rate);
++}
++
++struct mxsfb_dvi_timing {
++	u16 h_blanking;
++	u16 v_lines;
++	u16 f1_start, f1_end, f2_start, f2_end;
++	u16 v1_blank_start, v1_blank_end, v2_blank_start, v2_blank_end;
++};
++
++/* ITU-R BT.656 timing, i.MX23 reference manual chapter 19.3 */
++static const struct mxsfb_dvi_timing mxsfb_dvi_ntsc = {
++	.h_blanking = 262, .v_lines = 525,
++	.f1_start = 4, .f1_end = 265, .f2_start = 266, .f2_end = 3,
++	.v1_blank_start = 263, .v1_blank_end = 285,
++	.v2_blank_start = 1, .v2_blank_end = 22,
++};
++
++static const struct mxsfb_dvi_timing mxsfb_dvi_pal = {
++	.h_blanking = 274, .v_lines = 625,
++	.f1_start = 1, .f1_end = 312, .f2_start = 313, .f2_end = 625,
++	.v1_blank_start = 311, .v1_blank_end = 332,
++	.v2_blank_start = 624, .v2_blank_end = 19,
++};
++
++static void mxsfb_set_dvi_mode(struct mxsfb_drm_private *mxsfb)
++{
++	struct drm_display_mode *m = &mxsfb->crtc.state->adjusted_mode;
++	const struct mxsfb_dvi_timing *t;
++	void __iomem *base = mxsfb->base;
++
++	t = m->vdisplay == 576 ? &mxsfb_dvi_pal : &mxsfb_dvi_ntsc;
++
++	writel(TRANSFER_COUNT_SET_VCOUNT(m->vdisplay) |
++	       TRANSFER_COUNT_SET_HCOUNT(m->hdisplay),
++	       base + mxsfb->devdata->transfer_count);
++
++	/* Two bytes (Cb/Cr and Y) per pixel */
++	writel(DVICTRL0_H_ACTIVE_CNT(m->hdisplay * 2) |
++	       DVICTRL0_H_BLANKING_CNT(t->h_blanking) |
++	       DVICTRL0_V_LINES_CNT(t->v_lines), base + LCDC_V3_DVICTRL0);
++	writel(DVICTRL1_F1_START_LINE(t->f1_start) |
++	       DVICTRL1_F1_END_LINE(t->f1_end) |
++	       DVICTRL1_F2_START_LINE(t->f2_start), base + LCDC_V3_DVICTRL1);
++	writel(DVICTRL2_F2_END_LINE(t->f2_end) |
++	       DVICTRL2_V1_BLANK_START_LINE(t->v1_blank_start) |
++	       DVICTRL2_V1_BLANK_END_LINE(t->v1_blank_end),
++	       base + LCDC_V3_DVICTRL2);
++	writel(DVICTRL3_V2_BLANK_START_LINE(t->v2_blank_start) |
++	       DVICTRL3_V2_BLANK_END_LINE(t->v2_blank_end),
++	       base + LCDC_V3_DVICTRL3);
++	writel(DVICTRL4_Y_FILL_VALUE(16) | DVICTRL4_CB_FILL_VALUE(128) |
++	       DVICTRL4_CR_FILL_VALUE(128), base + LCDC_V3_DVICTRL4);
++
++	/* BT.601 limited range RGB to YCbCr, co-sited chroma subsampling */
++	writel(CSC_COEFF0_C0(0x41) | CSC_COEFF0_SUBSAMPLE_COSITED,
++	       base + LCDC_V3_CSC_COEFF0);
++	writel(CSC_COEFF_PAIR(0x19, 0x81), base + LCDC_V3_CSC_COEFF1);
++	writel(CSC_COEFF_PAIR(0x3b6, 0x3db), base + LCDC_V3_CSC_COEFF2);
++	writel(CSC_COEFF_PAIR(0x70, 0x70), base + LCDC_V3_CSC_COEFF3);
++	writel(CSC_COEFF_PAIR(0x3ee, 0x3a2), base + LCDC_V3_CSC_COEFF4);
++	writel(CSC_OFFSET(128, 16), base + LCDC_V3_CSC_OFFSET);
++	writel(CSC_LIMIT(16, 240, 16, 235), base + LCDC_V3_CSC_LIMIT);
++}
++
+ static void mxsfb_enable_controller(struct mxsfb_drm_private *mxsfb)
+ {
+ 	u32 reg;
+@@ -164,13 +257,15 @@
+ 		writel(reg, mxsfb->base + LCDC_V4_CTRL2);
+ 	}
+ 
+-	/* If it was disabled, re-enable the mode again */
+-	writel(CTRL_DOTCLK_MODE, mxsfb->base + LCDC_CTRL + REG_SET);
+-
+-	/* Enable the SYNC signals first, then the DMA engine */
+-	reg = readl(mxsfb->base + LCDC_VDCTRL4);
+-	reg |= VDCTRL4_SYNC_SIGNALS_ON;
+-	writel(reg, mxsfb->base + LCDC_VDCTRL4);
++	if (!mxsfb->dvi_mode) {
++		/* If it was disabled, re-enable the mode again */
++		writel(CTRL_DOTCLK_MODE, mxsfb->base + LCDC_CTRL + REG_SET);
++
++		/* Enable the SYNC signals first, then the DMA engine */
++		reg = readl(mxsfb->base + LCDC_VDCTRL4);
++		reg |= VDCTRL4_SYNC_SIGNALS_ON;
++		writel(reg, mxsfb->base + LCDC_VDCTRL4);
++	}
+ 
+ 	/*
+ 	 * Enable recovery on underflow.
+@@ -208,18 +303,26 @@
+ {
+ 	u32 reg;
+ 
+-	/*
+-	 * Even if we disable the controller here, it will still continue
+-	 * until its FIFOs are running out of data
+-	 */
+-	writel(CTRL_DOTCLK_MODE, mxsfb->base + LCDC_CTRL + REG_CLR);
+-
+-	readl_poll_timeout(mxsfb->base + LCDC_CTRL, reg, !(reg & CTRL_RUN),
+-			   0, 1000);
+-
+-	reg = readl(mxsfb->base + LCDC_VDCTRL4);
+-	reg &= ~VDCTRL4_SYNC_SIGNALS_ON;
+-	writel(reg, mxsfb->base + LCDC_VDCTRL4);
++	if (mxsfb->dvi_mode) {
++		/* The current frame is sent out completely before RUN clears */
++		writel(CTRL_DVI_MODE, mxsfb->base + LCDC_CTRL + REG_CLR);
++
++		readl_poll_timeout(mxsfb->base + LCDC_CTRL, reg,
++				   !(reg & CTRL_RUN), 1000, 100000);
++	} else {
++		/*
++		 * Even if we disable the controller here, it will still
++		 * continue until its FIFOs are running out of data
++		 */
++		writel(CTRL_DOTCLK_MODE, mxsfb->base + LCDC_CTRL + REG_CLR);
++
++		readl_poll_timeout(mxsfb->base + LCDC_CTRL, reg,
++				   !(reg & CTRL_RUN), 0, 1000);
++
++		reg = readl(mxsfb->base + LCDC_VDCTRL4);
++		reg &= ~VDCTRL4_SYNC_SIGNALS_ON;
++		writel(reg, mxsfb->base + LCDC_VDCTRL4);
++	}
+ 
+ 	clk_disable_unprepare(mxsfb->clk);
+ 	if (mxsfb->clk_disp_axi)
+@@ -303,6 +406,13 @@
+ 
+ 	mxsfb_set_formats(mxsfb, bus_format);
+ 
++	if (mxsfb->dvi_mode) {
++		/* BT.656 is clocked at 27 MHz, twice the pixel clock of the mode */
++		mxsfb_set_dvi_clock(mxsfb, m->crtc_clock * 2000);
++		mxsfb_set_dvi_mode(mxsfb);
++		return;
++	}
++
+ 	clk_set_rate(mxsfb->clk, m->crtc_clock * 1000);
+ 
+ 	mxsfb_set_mode(mxsfb, bus_flags);
+@@ -385,6 +495,8 @@
+ 	if (!bus_format)
+ 		bus_format = MEDIA_BUS_FMT_RGB888_1X24;
+ 
++	mxsfb->dvi_mode = bus_format == MEDIA_BUS_FMT_UYVY8_2X8;
++
+ 	mxsfb_crtc_mode_set_nofb(mxsfb, bridge_state, bus_format);
+ 
+ 	/* Write cur_buf as well to avoid an initial corrupt frame */

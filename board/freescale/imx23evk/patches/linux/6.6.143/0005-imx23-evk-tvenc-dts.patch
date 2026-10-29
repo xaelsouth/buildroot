@@ -1,0 +1,64 @@
+--- a/arch/arm/boot/dts/nxp/mxs/imx23-evk.dts
++++ b/arch/arm/boot/dts/nxp/mxs/imx23-evk.dts
+@@ -146,9 +146,28 @@
+ 				status = "okay";
+ 
+ 				port {
+-					display_out: endpoint {
++					#address-cells = <1>;
++					#size-cells = <0>;
++
++					display_out: endpoint@0 {
++						reg = <0>;
+ 						remote-endpoint = <&panel_in>;
+ 					};
++
++					tv_out: endpoint@1 {
++						reg = <1>;
++						remote-endpoint = <&tvenc_in>;
++					};
++				};
++			};
++
++			tvenc@80038000 {
++				status = "okay";
++
++				port {
++					tvenc_in: endpoint {
++						remote-endpoint = <&tv_out>;
++					};
+ 				};
+ 			};
+ 		};
+--- a/arch/arm/boot/dts/nxp/mxs/imx23-evk-enc28j60.dts
++++ b/arch/arm/boot/dts/nxp/mxs/imx23-evk-enc28j60.dts
+@@ -189,9 +189,28 @@
+ 				status = "okay";
+ 
+ 				port {
+-					display_out: endpoint {
++					#address-cells = <1>;
++					#size-cells = <0>;
++
++					display_out: endpoint@0 {
++						reg = <0>;
+ 						remote-endpoint = <&panel_in>;
+ 					};
++
++					tv_out: endpoint@1 {
++						reg = <1>;
++						remote-endpoint = <&tvenc_in>;
++					};
++				};
++			};
++
++			tvenc@80038000 {
++				status = "okay";
++
++				port {
++					tvenc_in: endpoint {
++						remote-endpoint = <&tv_out>;
++					};
+ 				};
+ 			};
+ 		};
