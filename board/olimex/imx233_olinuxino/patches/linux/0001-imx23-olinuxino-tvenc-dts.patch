@@ -1,0 +1,34 @@
+--- a/arch/arm/boot/dts/nxp/mxs/imx23-olinuxino.dts
++++ b/arch/arm/boot/dts/nxp/mxs/imx23-olinuxino.dts
+@@ -63,6 +63,31 @@
+ 				pinctrl-0 = <&spi2_pins_a>;
+ 				status = "okay";
+ 			};
++
++			/* Composite TV out only, no LCD panel, so no LCDIF pins are muxed */
++			lcdif@80030000 {
++				status = "okay";
++
++				port {
++					#address-cells = <1>;
++					#size-cells = <0>;
++
++					tv_out: endpoint@1 {
++						reg = <1>;
++						remote-endpoint = <&tvenc_in>;
++					};
++				};
++			};
++
++			tvenc@80038000 {
++				status = "okay";
++
++				port {
++					tvenc_in: endpoint {
++						remote-endpoint = <&tv_out>;
++					};
++				};
++			};
+ 		};
+ 
+ 		apbx@80040000 {

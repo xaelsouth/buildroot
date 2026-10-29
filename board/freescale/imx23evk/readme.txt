@@ -70,4 +70,12 @@ NAND:
 - Put the Boot Mode Select jumper as 0 1 0 0 so that it can boot from NAND
 - Reboot.
 
+Composite TV output:
+- The EVK can use the composite TV output (PAL, 720x576) instead of the LCD by
+  default, see linux-tvenc.fragment. The output is chosen by the kernel
+  parameter mxsfb.output=lcd|tv_pal|tv_ntsc (NTSC is 720x480).
+- To change the default, edit CONFIG_CMDLINE in linux-tvenc.fragment and run
+  make linux-reconfigure && make. Drop the fragment from the defconfig to
+  use the LCD.
+
 Enjoy!

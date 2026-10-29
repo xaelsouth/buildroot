@@ -1,0 +1,25 @@
+--- a/arch/arm/boot/dts/nxp/mxs/imx23.dtsi
++++ b/arch/arm/boot/dts/nxp/mxs/imx23.dtsi
+@@ -459,7 +459,8 @@
+ 				compatible = "fsl,imx23-lcdif";
+ 				reg = <0x80030000 2000>;
+ 				interrupts = <46>, <45>;
+-				clocks = <&clks IMX23_CLK_LCDIF>;
++				clocks = <&clks IMX23_CLK_LCDIF>, <&clks IMX23_CLK_REF_PIX>;
++				clock-names = "pix", "ref_pix";
+ 				status = "disabled";
+ 			};
+ 
+@@ -472,8 +473,11 @@
+ 				status = "disabled";
+ 			};
+ 
+-			tvenc@80038000 {
++			tvenc: tvenc@80038000 {
++				compatible = "fsl,imx23-tvenc";
+ 				reg = <0x80038000 0x2000>;
++				clocks = <&clks IMX23_CLK_TV27M>, <&clks IMX23_CLK_TV108M>;
++				clock-names = "tv27m", "tv108m";
+ 				status = "disabled";
+ 			};
+ 		};

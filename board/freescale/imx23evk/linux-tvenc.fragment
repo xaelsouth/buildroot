@@ -1,0 +1,6 @@
+# Composite TV output (PAL) through the i.MX23 TV encoder instead of the LCD
+CONFIG_DRM_MXSFB_TVENC=y
+CONFIG_CMDLINE_EXTEND=y
+CONFIG_CMDLINE="mxsfb.output=lcd"
+#CONFIG_CMDLINE="mxsfb.output=tv_pal"
+#CONFIG_CMDLINE="mxsfb.output=tv_ntsc"

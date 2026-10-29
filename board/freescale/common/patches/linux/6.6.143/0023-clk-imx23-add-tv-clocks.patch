@@ -1,0 +1,41 @@
+--- a/include/dt-bindings/clock/imx23-clock.h
++++ b/include/dt-bindings/clock/imx23-clock.h
+@@ -48,7 +48,13 @@
+ #define IMX23_CLK_ETM           39
+ #define IMX23_CLK_USB           40
+ #define IMX23_CLK_USB_PHY       41
++#define IMX23_CLK_REF_VID_DIV   42
++#define IMX23_CLK_REF_VID       43
++#define IMX23_CLK_TV108M_DIV    44
++#define IMX23_CLK_TV108M        45
++#define IMX23_CLK_TV27M_DIV     46
++#define IMX23_CLK_TV27M         47
+ 
+-#define IMX23_CLK_MAX           42
++#define IMX23_CLK_MAX           48
+ 
+ #endif /* __DT_BINDINGS_CLOCK_IMX23_H */
+--- a/drivers/clk/mxs/clk-imx23.c
++++ b/drivers/clk/mxs/clk-imx23.c
+@@ -34,6 +34,7 @@
+ #define TV			(CLKCTRL + 0x00d0)
+ #define ETM			(CLKCTRL + 0x00e0)
+ #define FRAC			(CLKCTRL + 0x00f0)
++#define FRAC1			(CLKCTRL + 0x0100)
+ #define CLKSEQ			(CLKCTRL + 0x0110)
+ 
+ #define BP_CPU_INTERRUPT_WAIT	12
+@@ -141,6 +142,13 @@
+ 	clks[IMX23_CLK_SAIF] = mxs_clk_gate("saif", "saif_div", SAIF, 31);
+ 	clks[IMX23_CLK_LCDIF] = mxs_clk_gate("lcdif", "lcdif_div", PIX, 31);
+ 	clks[IMX23_CLK_ETM] = mxs_clk_gate("etm", "etm_div", ETM, 31);
++	/* 432 MHz video reference, 108 MHz and 27 MHz clocks for the TV encoder */
++	clks[IMX23_CLK_REF_VID_DIV] = mxs_clk_fixed_factor("ref_vid_div", "pll", 9, 10);
++	clks[IMX23_CLK_REF_VID] = mxs_clk_gate("ref_vid", "ref_vid_div", FRAC1, 31);
++	clks[IMX23_CLK_TV108M_DIV] = mxs_clk_fixed_factor("tv108m_div", "ref_vid", 1, 4);
++	clks[IMX23_CLK_TV108M] = mxs_clk_gate("tv108m", "tv108m_div", TV, 31);
++	clks[IMX23_CLK_TV27M_DIV] = mxs_clk_fixed_factor("tv27m_div", "ref_vid", 1, 16);
++	clks[IMX23_CLK_TV27M] = mxs_clk_gate("tv27m", "tv27m_div", TV, 30);
+ 	clks[IMX23_CLK_USB] = mxs_clk_gate("usb", "usb_phy", DIGCTRL, 2);
+ 	clks[IMX23_CLK_USB_PHY] = clk_register_gate(NULL, "usb_phy", "pll", 0, PLLCTRL0, 18, 0, &mxs_lock);
+ 
