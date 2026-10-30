@@ -27,3 +27,37 @@ Then, run the following command as root:
 *** WARNING! The command will destroy all the card content. Use with care! ***
 
  sudo dd if=output/images/sdcard.img of=/dev/<your-microsd-device>
+
+=== U-Boot USB host, network and storage =====================================
+
+U-Boot is patched (patches/uboot/) so that the USB hub power GPIO
+(GPIO0_17) is driven by the EHCI driver; without it, devices behind the
+on-board hub are not detected. USB storage, USB host Ethernet (ASIX,
+ASIX88179, SMSC95xx, RTL8152) and the ping, dhcp and tftpboot commands
+are enabled.
+
+The environment is not stored anywhere (ENV_IS_NOWHERE), so values set with
+setenv are lost on reset and saveenv does not work.
+
+Check the devices:
+
+  => usb start
+  => usb tree
+  => usb storage
+
+Test the USB network adapter:
+
+  => dhcp
+  => ping <host-ip>
+
+or with static addresses:
+
+  => setenv ipaddr 192.168.1.50
+  => setenv serverip 192.168.1.10
+  => ping ${serverip}
+  => tftpboot ${loadaddr} <file>
+
+Test the USB stick:
+
+  => fatls usb 0:1
+  => load usb 0:1 ${loadaddr} <file>

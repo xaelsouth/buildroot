@@ -1,0 +1,20 @@
+board: olimex: mx23_olinuxino: mux hub power pin to GPIO
+
+board_ehci_hcd_init() drives GPIO0_17 to power the LAN9512/GL850G USB
+hub, but never muxed the GPMI_ALE pad to its GPIO function. Do that
+explicitly, as Linux does for its usb0_vbus regulator, and give the hub
+a little longer to power up.
+
+--- a/board/olimex/mx23_olinuxino/mx23_olinuxino.c
++++ b/board/olimex/mx23_olinuxino/mx23_olinuxino.c
+@@ -39,8 +39,9 @@
+ int board_ehci_hcd_init(int port)
+ {
+ 	/* Enable LAN9512 (Maxi) or GL850G (Mini) USB HUB power. */
++	mxs_iomux_setup_pad(MX23_PAD_GPMI_ALE__GPIO_0_17);
+ 	gpio_direction_output(MX23_PAD_GPMI_ALE__GPIO_0_17, 1);
+-	udelay(100);
++	udelay(1000);
+ 	return 0;
+ }
+ 

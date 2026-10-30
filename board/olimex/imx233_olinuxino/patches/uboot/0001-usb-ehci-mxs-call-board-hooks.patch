@@ -1,0 +1,60 @@
+usb: ehci-mxs: call board_ehci_hcd_init/exit hooks
+
+Other EHCI glue drivers (mx5, mx6, vf) let the board switch VBUS or hub
+power through weak board_ehci_hcd_init()/board_ehci_hcd_exit() hooks,
+but ehci-mxs never did. Boards such as the Olimex MX23-OLinuxino define
+the hooks, which were therefore dead code, and the USB hub stayed
+unpowered in U-Boot.
+
+Add weak default hooks and call them from the controller init and stop
+paths.
+
+--- a/drivers/usb/host/ehci-mxs.c
++++ b/drivers/usb/host/ehci-mxs.c
+@@ -52,12 +52,26 @@
+ 	return 0;
+ }
+ 
++__weak int board_ehci_hcd_init(int port)
++{
++	return 0;
++}
++
++__weak int board_ehci_hcd_exit(int port)
++{
++	return 0;
++}
++
+ static int __ehci_hcd_init(struct ehci_mxs_port *port, enum usb_init_type init,
+ 			   struct ehci_hccr **hccr, struct ehci_hcor **hcor)
+ {
+ 	u32 usb_base, cap_base;
+ 	int ret;
+ 
++	ret = board_ehci_hcd_init(0);
++	if (ret)
++		return ret;
++
+ 	/* Reset the PHY block */
+ 	writel(USBPHY_CTRL_SFTRST, &port->phy_regs->hw_usbphy_ctrl_set);
+ 	udelay(10);
+@@ -90,6 +104,7 @@
+ 	u32 usb_base, cap_base, tmp;
+ 	struct ehci_hccr *hccr;
+ 	struct ehci_hcor *hcor;
++	int ret;
+ 
+ 	/* Stop the USB port */
+ 	usb_base = port->usb_regs + 0x100;
+@@ -109,7 +124,10 @@
+ 	writel(tmp, &port->phy_regs->hw_usbphy_pwd);
+ 
+ 	/* Disable USB clock */
+-	return ehci_mxs_toggle_clock(port, 0);
++	ret = ehci_mxs_toggle_clock(port, 0);
++	board_ehci_hcd_exit(0);
++
++	return ret;
+ }
+ 
+ struct ehci_mxs_priv_data {
