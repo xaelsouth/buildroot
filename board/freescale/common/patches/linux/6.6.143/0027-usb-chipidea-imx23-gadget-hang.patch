@@ -1,0 +1,20 @@
+usb: chipidea: i.MX23: do not disable streaming mode
+
+Setting USBMODE.SDIS on i.MX23 forces a full TX FIFO pre-fill and makes
+the device answer every received packet with NYET in high-speed mode.
+Sustained IN transfers (e.g. an RNDIS download from the target) hang
+with it set. The i.MX23 reference manual does not require it.
+
+diff -urN a/drivers/usb/chipidea/ci_hdrc_imx.c b/drivers/usb/chipidea/ci_hdrc_imx.c
+--- a/drivers/usb/chipidea/ci_hdrc_imx.c
++++ b/drivers/usb/chipidea/ci_hdrc_imx.c
+@@ -24,8 +24,7 @@
+ };
+ 
+ static const struct ci_hdrc_imx_platform_flag imx23_usb_data = {
+-	.flags = CI_HDRC_TURN_VBUS_EARLY_ON |
+-		CI_HDRC_DISABLE_STREAMING,
++	.flags = CI_HDRC_TURN_VBUS_EARLY_ON,
+ };
+ 
+ static const struct ci_hdrc_imx_platform_flag imx27_usb_data = {
