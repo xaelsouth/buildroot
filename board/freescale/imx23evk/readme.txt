@@ -58,6 +58,18 @@ USB:
 - Execute on host PC:
   output/images/sb_loader -d -p hid output/images/linux-itb.sb.
 
+U-Boot ENC28J60:
+- The ENC28J60 is enabled in U-Boot for NAND and USB boot modes. SD/MMC boot
+  keeps SSP0 configured for the SD card, so U-Boot networking is unavailable
+  in that mode.
+- The ENC28J60 is configured for 10 Mbit full duplex without autonegotiation
+  (like `ethtool -s eth0 speed 10 duplex full autoneg off` in Linux), so the
+  link partner must be forced to 10 Mbit full duplex too. Set
+  CONFIG_ENC28J60_FULL_DUPLEX=n in uboot.fragment for half duplex.
+- At the U-Boot prompt, set a unique `ethaddr` for the board, then use the
+  `dhcp`, `ping`, or `tftpboot` commands. The current U-Boot environment is
+  volatile, so `ethaddr` must be set again after a reboot.
+
 NAND:
 - Boot from SD card as described above. linux-itb.sb has to be in rootfs.
 - Alternatively, boot from USB and use network to transfer
