@@ -107,6 +107,26 @@ Using uuu with SDP:
 - Jump to an address with `uuu SDPV: jump -addr <addr>`. U-Boot runs a
   script image (mkimage -T script) found there, so it can be used to run
   commands. Do not call usb start, ums or usbnet from such a script.
+- fastboot: Fastboot protocol, with flashing to the SD card (MMC device 0)
+  and UUU support (FB: ucmd/acmd run arbitrary U-Boot commands over USB,
+  use only with trusted hosts):
+  fastboot 0
+  Do not call usb start. Fastboot shares the USB ID 0525:b4a4 and
+  bcdDevice 0x7EAA with SDP, so uuu has to be told to use the FB protocol
+  for it. Create a script, for example imx23evk-fastboot.uuu:
+
+  cat >imx23evk-fastboot.uuu <<EOF
+  uuu_version 1.2.39
+
+  CFG: FB: -vid 0x0525 -pid 0xb4a4 -bcdversion 0x7eaa
+  FB: ucmd printenv
+  EOF
+
+  Run it on the host PC:
+  output/host/bin/uuu -v imx23evk-fastboot.uuu
+  The script needs the uuu_version header and the colon in "CFG: FB:". uuu
+  keeps waiting for devices after the script ends, press Ctrl-C to exit.
+  The output of ucmd is printed on the U-Boot console, not on the host.
 
 NAND:
 - Boot from SD card as described above. linux-itb.sb has to be in rootfs.
