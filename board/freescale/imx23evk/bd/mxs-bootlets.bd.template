@@ -1,0 +1,51 @@
+options {
+	driveTag = 0x00;
+	flags = 0x01;
+}
+
+sources {
+	power_prep="%POWER_PREP%";
+	boot_prep="%BOOT_PREP%";
+	u_boot="%UBOOT_BIN%";
+	itb_image="%ITB_IMAGE%";
+}
+
+section (0) {
+
+	//----------------------------------------------------------
+	// Power Supply initialization
+	//----------------------------------------------------------
+
+	load power_prep;
+	call power_prep;
+
+	//----------------------------------------------------------
+	// SDRAM initialization
+	//----------------------------------------------------------
+
+	load boot_prep;
+	call boot_prep;
+
+	//----------------------------------------------------------
+	//  Load ITB image
+	//----------------------------------------------------------
+	load itb_image > 0x46000000;
+
+	//----------------------------------------------------------
+	//  Load and call u_boot - ELF ARM image
+	//----------------------------------------------------------
+
+	// Zeroing MXS_SPL_DATA ((struct mxs_spl_data *)(CONFIG_TEXT_BASE - 0x200))
+	// struct mxs_spl_data {
+	//   uint8_t	boot_mode_idx;
+	//   uint32_t	mem_dram_size;
+	// };
+
+	load 0.b     > 0x40001E00..0x40002000;
+	// boot_mode_idx: 0 = Boot mode USB
+	load 0x00000000  > 0x40001E00;
+	// mem_dram_size: 0x08000000 = 128 MB RAM
+	load 0x08000000  > 0x40001E04;
+	load u_boot  > 0x40002000;
+	jump 0x40002000;
+}

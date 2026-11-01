@@ -1,0 +1,21 @@
+options {
+	driveTag = 0x00;
+	flags = 0x01;
+}
+
+sources {
+	u_boot_spl="%UBOOT_SPL%";
+	u_boot="%UBOOT_BIN%";
+	itb_image="%ITB_IMAGE%";
+}
+
+section (0) {
+	load u_boot_spl > 0x1000;
+	call 0x1000;
+
+	// Load ITB image 0x46000000
+	load itb_image > 0x46000000;
+
+	load u_boot  > 0x40002000;
+	jump 0x40002000;
+}
