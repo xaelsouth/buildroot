@@ -1,0 +1,58 @@
+--- a/arch/arm/boot/dts/nxp/mxs/imx23-olinuxino.dts
++++ b/arch/arm/boot/dts/nxp/mxs/imx23-olinuxino.dts
+@@ -7,6 +7,7 @@
+ 
+ /dts-v1/;
+ #include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/interrupt-controller/irq.h>
+ #include "imx23.dtsi"
+ #include "imx23-audio.dtsi"
+ 
+@@ -44,6 +45,16 @@
+ 					fsl,pull-up = <MXS_PULL_DISABLE>;
+ 				};
+ 
++				enc_int_pin: enc-int@0 {
++					reg = <0>;
++					fsl,pinmux-ids = <
++						MX23_PAD_LCD_ENABLE__GPIO_1_23
++					>;
++					fsl,drive-strength = <MXS_DRIVE_4mA>;
++					fsl,voltage = <MXS_VOLTAGE_HIGH>;
++					fsl,pull-up = <MXS_PULL_ENABLE>;
++				};
++
+ 				led_pin_gpio2_1: led_gpio2_1@0 {
+ 					reg = <0>;
+ 					fsl,pinmux-ids = <
+@@ -62,6 +73,17 @@
+ 				pinctrl-names = "default";
+ 				pinctrl-0 = <&spi2_pins_a>;
+ 				status = "okay";
++
++				/* MOD-ENC624J600 on UEXT, INT on pin 5 (shared with I2C SCL) */
++				ethernet@0 {
++					compatible = "microchip,encx24j600";
++					reg = <0>;
++					spi-max-frequency = <14000000>;
++					pinctrl-names = "default";
++					pinctrl-0 = <&enc_int_pin>;
++					interrupt-parent = <&gpio1>;
++					interrupts = <23 IRQ_TYPE_LEVEL_LOW>;
++				};
+ 			};
+ 
+ 			/* Composite TV out only, no LCD panel, so no LCDIF pins are muxed */
+@@ -95,10 +117,9 @@
+ 				status = "okay";
+ 			};
+ 
++			/* SCL pin is used as the ENC624J600 interrupt */
+ 			i2c: i2c@80058000 {
+-				pinctrl-names = "default";
+-				pinctrl-0 = <&i2c_pins_b>;
+-				status = "okay";
++				status = "disabled";
+ 			};
+ 
+ 			duart: serial@80070000 {
