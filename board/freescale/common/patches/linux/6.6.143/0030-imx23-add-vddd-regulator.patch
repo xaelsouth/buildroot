@@ -1,0 +1,387 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+Subject: [PATCH] regulator: mxs: add i.MX23 VDDD voltage scaling
+
+Add a regulator driver for the i.MX23 internal VDDD rail and describe its
+voltage ranges in the device tree. This lets cpufreq-dt apply the voltage
+requirements associated with the CPU operating points.
+
+---
+--- a/arch/arm/boot/dts/nxp/mxs/imx23.dtsi
++++ b/arch/arm/boot/dts/nxp/mxs/imx23.dtsi
+@@ -528,9 +528,14 @@
+ 				status = "disabled";
+ 			};
+ 
+-			power@80044000 {
++			vddd_reg: regulator@80044000 {
++				compatible = "fsl,imx23-vddd";
+ 				reg = <0x80044000 0x2000>;
++				interrupts = <33>;
+-				status = "disabled";
++				regulator-name = "VDDD";
++				regulator-min-microvolt = <1050000>;
++				regulator-max-microvolt = <1550000>;
++				regulator-always-on;
+ 			};
+ 
+ 			saif1: saif@80046000 {
+--- a/drivers/regulator/Kconfig
++++ b/drivers/regulator/Kconfig
+@@ -114,6 +114,14 @@
+ 	  Say y here to support Freescale i.MX on-chip ANATOP LDOs
+ 	  regulators. It is recommended that this option be
+ 	  enabled on i.MX6 platform.
++
++config REGULATOR_MXS_VDDD
++	tristate "Freescale MXS VDDD regulator"
++	depends on ARCH_MXS
++	help
++	  This driver controls the programmable core-voltage supply on
++	  i.MX23 SoCs. It is required when CPU operating points request
++	  multiple VDDD levels through cpufreq-dt. If unsure, say N.
+ 
+ config REGULATOR_AAT2870
+ 	tristate "AnalogicTech AAT2870 Regulators"
+--- a/drivers/regulator/Makefile
++++ b/drivers/regulator/Makefile
+@@ -21,6 +21,7 @@
+ obj-$(CONFIG_REGULATOR_ACT8945A) += act8945a-regulator.o
+ obj-$(CONFIG_REGULATOR_AD5398) += ad5398.o
+ obj-$(CONFIG_REGULATOR_ANATOP) += anatop-regulator.o
++obj-$(CONFIG_REGULATOR_MXS_VDDD) += mxs-vddd.o
+ obj-$(CONFIG_REGULATOR_ARIZONA_LDO1) += arizona-ldo1.o
+ obj-$(CONFIG_REGULATOR_ARIZONA_MICSUPP) += arizona-micsupp.o
+ obj-$(CONFIG_REGULATOR_ARM_SCMI) += scmi-regulator.o
+--- /dev/null
++++ b/drivers/regulator/mxs-vddd.c
+@@ -0,0 +1,280 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Regulator driver for the i.MX23 internal VDDD supply.
++ */
++
++#include <linux/bitfield.h>
++#include <linux/delay.h>
++#include <linux/err.h>
++#include <linux/interrupt.h>
++#include <linux/io.h>
++#include <linux/iopoll.h>
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/regulator/driver.h>
++#include <linux/regulator/of_regulator.h>
++#include <linux/slab.h>
++
++#define MXS_POWER_CTRL_SET		0x04
++#define MXS_POWER_CTRL_CLR		0x08
++#define MXS_POWER_5VCTRL		0x10
++#define MXS_POWER_VDDDCTRL		0x40
++#define MXS_POWER_STS			0xc0
++
++#define MXS_POWER_CTRL_CLKGATE		BIT(30)
++/* VDDD brownout IRQ bits of HW_POWER_CTRL, from mxs-bootlets-10.12.01,
++ * mach-mx23/includes/registers/regspower.h:331,342.
++ */
++#define MXS_POWER_CTRL_VDDD_BO_IRQ	BIT(7)
++#define MXS_POWER_CTRL_ENIRQ_VDDD_BO	BIT(6)
++#define MXS_POWER_VDDDCTRL_BO_OFFSET	GENMASK(10, 8)
++#define MXS_POWER_VDDDCTRL_TRG		GENMASK(4, 0)
++/* VDDDCTRL and 5VCTRL fields from mxs-bootlets-10.12.01,
++ * mach-mx23/includes/registers/regspower.h
++ */
++#define MXS_POWER_VDDDCTRL_DISABLE_FET	BIT(20)
++#define MXS_POWER_5VCTRL_ENABLE_DCDC	BIT(0)
++/* VDD5V_GT_VDDIO: bit 5 of HW_POWER_STS, from the i.MX23 reference manual.
++ * DC_OK: bit 9 of HW_POWER_STS, taken from mxs-bootlets-10.12.01,
++ * mach-mx23/includes/registers/regspower.h:2092 (BM_POWER_STS_DC_OK).
++ * It is wrong or not described in the reference manual.
++ */
++#define MXS_POWER_STS_DC_OK		BIT(9)
++#define MXS_POWER_STS_VDDD_BO		BIT(6)
++#define MXS_POWER_STS_VDD5V_GT_VDDIO	BIT(5)
++
++#define MXS_VDDD_MIN_UV			800000
++#define MXS_VDDD_STEP_UV		25000
++/* Selector 30 is 1550 mV, the bootlets' VDDD_ABS_MAX_MV */
++#define MXS_VDDD_NUM_VOLTAGES		31
++/* Wait times of ddi_power_WaitDcdcStable() in mxs-bootlets (ddi_power_internal.h) */
++/* Linear regulator wait times, ddi_power_internal.h (the bootlets' values are
++ * in microseconds, the unit of ddi_power_Wait(); the header comment says ms)
++ */
++#define MXS_VDDD_LINREG_MIN_WAIT_US	1000
++#define MXS_VDDD_LINREG_MAX_WAIT_US	5000
++#define MXS_VDDD_DCDC_MIN_WAIT_US	15
++#define MXS_VDDD_DCDC_MAX_WAIT_US	20000
++#define MXS_VDDD_DCDC_RECHECK_US	10
++#define MXS_VDDD_MAX_STEP		4
++#define MXS_VDDD_BO_OFFSET_1050		3
++#define MXS_VDDD_BO_OFFSET_OTHER	4
++#define MXS_VDDD_BO_OFFSET_MAX		7
++
++struct mxs_vddd {
++	struct device *dev;
++	void __iomem *base;
++};
++
++static int mxs_vddd_get_voltage_sel(struct regulator_dev *rdev)
++{
++	struct mxs_vddd *vddd = rdev_get_drvdata(rdev);
++	u32 val;
++
++	val = readl(vddd->base + MXS_POWER_VDDDCTRL);
++
++	return FIELD_GET(MXS_POWER_VDDDCTRL_TRG, val);
++}
++
++/* Same decision as hw_power_GetVdddPowerSource() in the bootlets */
++static bool mxs_vddd_from_linreg(struct mxs_vddd *vddd)
++{
++	u32 vdddctrl = readl(vddd->base + MXS_POWER_VDDDCTRL);
++
++	if (vdddctrl & MXS_POWER_VDDDCTRL_DISABLE_FET)
++		return true;
++
++	if (readl(vddd->base + MXS_POWER_STS) & MXS_POWER_STS_VDD5V_GT_VDDIO)
++		return !(readl(vddd->base + MXS_POWER_5VCTRL) &
++			 MXS_POWER_5VCTRL_ENABLE_DCDC);
++
++	return false;
++}
++
++static int mxs_vddd_wait_ready(struct mxs_vddd *vddd)
++{
++	u32 status;
++
++	if (mxs_vddd_from_linreg(vddd)) {
++		usleep_range(MXS_VDDD_LINREG_MIN_WAIT_US,
++			     MXS_VDDD_LINREG_MAX_WAIT_US);
++		return 0;
++	}
++
++	/* DC_OK may still be set from the previous state, so let it drop first */
++	usleep_range(MXS_VDDD_DCDC_MIN_WAIT_US, MXS_VDDD_DCDC_MIN_WAIT_US * 2);
++
++	return readl_poll_timeout(vddd->base + MXS_POWER_STS, status,
++				  status & MXS_POWER_STS_DC_OK,
++				  MXS_VDDD_DCDC_RECHECK_US,
++				  MXS_VDDD_DCDC_MAX_WAIT_US);
++}
++
++static irqreturn_t mxs_vddd_brownout_irq(int irq, void *data)
++{
++	struct mxs_vddd *vddd = data;
++	unsigned int sel;
++
++	writel(MXS_POWER_CTRL_VDDD_BO_IRQ, vddd->base + MXS_POWER_CTRL_CLR);
++	sel = FIELD_GET(MXS_POWER_VDDDCTRL_TRG,
++			readl(vddd->base + MXS_POWER_VDDDCTRL));
++	dev_crit_ratelimited(vddd->dev, "VDDD brownout detected (%u uV)\n",
++			     MXS_VDDD_MIN_UV + MXS_VDDD_STEP_UV * sel);
++
++	return IRQ_HANDLED;
++}
++
++static int mxs_vddd_do_set_voltage_sel(struct regulator_dev *rdev,
++				    unsigned int selector)
++{
++	struct mxs_vddd *vddd = rdev_get_drvdata(rdev);
++	u32 ctrl, current_sel, next, bo_offset;
++	int ret;
++
++	if (selector >= MXS_VDDD_NUM_VOLTAGES)
++		return -EINVAL;
++
++	ctrl = readl(vddd->base + MXS_POWER_VDDDCTRL);
++	current_sel = FIELD_GET(MXS_POWER_VDDDCTRL_TRG, ctrl);
++	bo_offset = selector == 10 ? MXS_VDDD_BO_OFFSET_1050 :
++		    MXS_VDDD_BO_OFFSET_OTHER;
++
++	if (selector > current_sel) {
++		ctrl &= ~MXS_POWER_VDDDCTRL_BO_OFFSET;
++		ctrl |= FIELD_PREP(MXS_POWER_VDDDCTRL_BO_OFFSET,
++				   MXS_VDDD_BO_OFFSET_MAX);
++		writel(ctrl, vddd->base + MXS_POWER_VDDDCTRL);
++	} else {
++		ctrl &= ~MXS_POWER_VDDDCTRL_BO_OFFSET;
++		ctrl |= FIELD_PREP(MXS_POWER_VDDDCTRL_BO_OFFSET, bo_offset);
++		writel(ctrl, vddd->base + MXS_POWER_VDDDCTRL);
++	}
++
++	while (current_sel != selector) {
++		if (selector > current_sel)
++			next = min_t(unsigned int,
++				     current_sel + MXS_VDDD_MAX_STEP, selector);
++		else
++			next = current_sel - selector > MXS_VDDD_MAX_STEP ?
++				current_sel - MXS_VDDD_MAX_STEP : selector;
++
++		ctrl = readl(vddd->base + MXS_POWER_VDDDCTRL);
++		ctrl &= ~MXS_POWER_VDDDCTRL_TRG;
++		ctrl |= FIELD_PREP(MXS_POWER_VDDDCTRL_TRG, next);
++		writel(ctrl, vddd->base + MXS_POWER_VDDDCTRL);
++
++		ret = mxs_vddd_wait_ready(vddd);
++		if (ret)
++			return ret;
++
++		current_sel = next;
++	}
++
++	ctrl = readl(vddd->base + MXS_POWER_VDDDCTRL);
++	ctrl &= ~MXS_POWER_VDDDCTRL_BO_OFFSET;
++	ctrl |= FIELD_PREP(MXS_POWER_VDDDCTRL_BO_OFFSET, bo_offset);
++	writel(ctrl, vddd->base + MXS_POWER_VDDDCTRL);
++
++	return 0;
++}
++
++/* The brownout level follows the target, so mask the IRQ while it changes */
++static int mxs_vddd_set_voltage_sel(struct regulator_dev *rdev,
++				    unsigned int selector)
++{
++	struct mxs_vddd *vddd = rdev_get_drvdata(rdev);
++	int ret;
++
++	writel(MXS_POWER_CTRL_ENIRQ_VDDD_BO, vddd->base + MXS_POWER_CTRL_CLR);
++	ret = mxs_vddd_do_set_voltage_sel(rdev, selector);
++	writel(MXS_POWER_CTRL_VDDD_BO_IRQ, vddd->base + MXS_POWER_CTRL_CLR);
++	writel(MXS_POWER_CTRL_ENIRQ_VDDD_BO, vddd->base + MXS_POWER_CTRL_SET);
++
++	return ret;
++}
++
++static const struct regulator_ops mxs_vddd_ops = {
++	.get_voltage_sel = mxs_vddd_get_voltage_sel,
++	.set_voltage_sel = mxs_vddd_set_voltage_sel,
++	.list_voltage = regulator_list_voltage_linear,
++};
++
++static const struct regulator_desc mxs_vddd_desc = {
++	.name = "vddd",
++	.type = REGULATOR_VOLTAGE,
++	.owner = THIS_MODULE,
++	.ops = &mxs_vddd_ops,
++	.n_voltages = MXS_VDDD_NUM_VOLTAGES,
++	.min_uV = MXS_VDDD_MIN_UV,
++	.uV_step = MXS_VDDD_STEP_UV,
++};
++
++static int mxs_vddd_probe(struct platform_device *pdev)
++{
++	struct regulator_config config = {};
++	struct mxs_vddd *vddd;
++	struct regulator_dev *rdev;
++	int irq, ret;
++
++	vddd = devm_kzalloc(&pdev->dev, sizeof(*vddd), GFP_KERNEL);
++	if (!vddd)
++		return -ENOMEM;
++
++	vddd->dev = &pdev->dev;
++	vddd->base = devm_platform_ioremap_resource(pdev, 0);
++	if (IS_ERR(vddd->base))
++		return PTR_ERR(vddd->base);
++
++	writel(MXS_POWER_CTRL_CLKGATE,
++	       vddd->base + MXS_POWER_CTRL_CLR);
++
++	config.dev = &pdev->dev;
++	config.driver_data = vddd;
++	config.of_node = pdev->dev.of_node;
++	config.init_data = of_get_regulator_init_data(&pdev->dev,
++						      pdev->dev.of_node,
++						      &mxs_vddd_desc);
++	if (!config.init_data)
++		return -EINVAL;
++
++	rdev = devm_regulator_register(&pdev->dev, &mxs_vddd_desc, &config);
++	if (IS_ERR(rdev))
++		return PTR_ERR(rdev);
++
++	irq = platform_get_irq_optional(pdev, 0);
++	if (irq == -EPROBE_DEFER)
++		return irq;
++	if (irq > 0) {
++		ret = devm_request_irq(&pdev->dev, irq, mxs_vddd_brownout_irq,
++				       0, dev_name(&pdev->dev), vddd);
++		if (ret)
++			return ret;
++
++		writel(MXS_POWER_CTRL_VDDD_BO_IRQ,
++		       vddd->base + MXS_POWER_CTRL_CLR);
++		writel(MXS_POWER_CTRL_ENIRQ_VDDD_BO,
++		       vddd->base + MXS_POWER_CTRL_SET);
++	}
++
++	return 0;
++}
++
++static const struct of_device_id mxs_vddd_of_match[] = {
++	{ .compatible = "fsl,imx23-vddd" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, mxs_vddd_of_match);
++
++static struct platform_driver mxs_vddd_driver = {
++	.probe = mxs_vddd_probe,
++	.driver = {
++		.name = "mxs-vddd",
++		.of_match_table = mxs_vddd_of_match,
++	},
++};
++module_platform_driver(mxs_vddd_driver);
++
++MODULE_DESCRIPTION("Freescale i.MX23 internal VDDD regulator");
++MODULE_LICENSE("GPL");
+--- /dev/null
++++ b/Documentation/devicetree/bindings/regulator/fsl,imx23-vddd.yaml
+@@ -0,0 +1,47 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/regulator/fsl,imx23-vddd.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: Freescale i.MX23 internal VDDD regulator
++
++maintainers:
++  - Linux MXS maintainers <linux-mxs@vger.kernel.org>
++
++description:
++  The i.MX23 power block controls the internal VDDD DC-DC supply. The
++  regulator can be used to adjust the core voltage for CPU operating points.
++
++allOf:
++  - $ref: regulator.yaml#
++
++properties:
++  compatible:
++    const: fsl,imx23-vddd
++
++  reg:
++    maxItems: 1
++
++  interrupts:
++    maxItems: 1
++    description: VDDD brownout interrupt
++
++required:
++  - compatible
++  - reg
++  - regulator-name
++
++unevaluatedProperties: false
++
++examples:
++  - |
++    regulator@80044000 {
++        compatible = "fsl,imx23-vddd";
++        reg = <0x80044000 0x2000>;
++        interrupts = <33>;
++        regulator-name = "VDDD";
++        regulator-min-microvolt = <1050000>;
++        regulator-max-microvolt = <1550000>;
++        regulator-always-on;
++    };

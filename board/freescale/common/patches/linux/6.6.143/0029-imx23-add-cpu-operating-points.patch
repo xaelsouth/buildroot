@@ -1,0 +1,154 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+Subject: [PATCH] clk: mxs: imx23: scale CPU voltage and cache timing
+
+Describe the CPU operating points, scale the internal VDDD rail, and select
+the corresponding DIGCTL_ARMCACHE timing when the CPU clock changes.
+The 64 MHz state is omitted until the EMI clock can be scaled safely.
+The 360 MHz state is also omitted as a conservative operating-point choice.
+
+---
+ arch/arm/boot/dts/nxp/mxs/imx23.dtsi | 22 ++++++++++++++++++++++
+ drivers/clk/mxs/clk-imx23.c          | 74 ++++++++++++++++++++++++++++++++++++
+ 2 files changed, 96 insertions(+)
+
+diff --git a/arch/arm/boot/dts/nxp/mxs/imx23.dtsi b/arch/arm/boot/dts/nxp/mxs/imx23.dtsi
+--- a/arch/arm/boot/dts/nxp/mxs/imx23.dtsi
++++ b/arch/arm/boot/dts/nxp/mxs/imx23.dtsi
+@@ -35,9 +35,31 @@
+ 			compatible = "arm,arm926ej-s";
+ 			device_type = "cpu";
+ 			reg = <0>;
++			clocks = <&clks IMX23_CLK_CPU>;
++			cpu-supply = <&vddd_reg>;
++			operating-points-v2 = <&cpu0_opp_table>;
+ 		};
+ 	};
+ 
++	cpu0_opp_table: opp-table-cpu {
++		compatible = "operating-points-v2";
++
++		opp-261818182 {
++			opp-hz = /bits/ 64 <261818182>;
++			opp-microvolt = <1275000>;
++		};
++
++		opp-392727273 {
++			opp-hz = /bits/ 64 <392727273>;
++			opp-microvolt = <1475000>;
++		};
++
++		opp-454736842 {
++			opp-hz = /bits/ 64 <454736842>;
++			opp-microvolt = <1550000>;
++		};
++	};
++
+ 	apb@80000000 {
+ 		compatible = "simple-bus";
+ 		#address-cells = <1>;
+diff --git a/drivers/clk/mxs/clk-imx23.c b/drivers/clk/mxs/clk-imx23.c
+--- a/drivers/clk/mxs/clk-imx23.c
++++ b/drivers/clk/mxs/clk-imx23.c
+@@ -8,6 +8,7 @@
+ #include <linux/err.h>
+ #include <linux/init.h>
+ #include <linux/io.h>
++#include <linux/notifier.h>
+ #include <linux/of.h>
+ #include <linux/of_address.h>
+ #include <dt-bindings/clock/imx23-clock.h>
+@@ -37,6 +38,58 @@
+ #define BP_SAIF_DIV_FRAC_EN	16
+ #define BP_FRAC_IOFRAC		24
+ 
++#define DIGCTL_ARMCACHE		0x02b0
++#define ARMCACHE_TIMING_MASK	0x00033333
++#define ARMCACHE_TIMING_00	0x00000000
++#define ARMCACHE_TIMING_11	0x00033333
++#define CPU_FREQ_64MHZ		64000000
++
++static void imx23_set_armcache_timing(u32 timing)
++{
++	void __iomem *reg;
++	u32 val;
++
++	if (WARN_ON_ONCE(!digctrl))
++		return;
++
++	reg = DIGCTRL + DIGCTL_ARMCACHE;
++	val = readl(reg);
++
++	val &= ~ARMCACHE_TIMING_MASK;
++	val |= timing;
++	writel(val, reg);
++}
++
++static int imx23_cpu_clk_notifier(struct notifier_block *nb,
++				  unsigned long event, void *data)
++{
++	struct clk_notifier_data *change = data;
++
++	switch (event) {
++	case PRE_RATE_CHANGE:
++		/* Select 00 before leaving the 64 MHz state. */
++		if (change->old_rate == CPU_FREQ_64MHZ &&
++		    change->new_rate != CPU_FREQ_64MHZ)
++			imx23_set_armcache_timing(ARMCACHE_TIMING_00);
++		break;
++	case POST_RATE_CHANGE:
++		if (change->new_rate == CPU_FREQ_64MHZ)
++			imx23_set_armcache_timing(ARMCACHE_TIMING_11);
++		break;
++	case ABORT_RATE_CHANGE:
++		if (change->old_rate == CPU_FREQ_64MHZ &&
++		    change->new_rate != CPU_FREQ_64MHZ)
++			imx23_set_armcache_timing(ARMCACHE_TIMING_11);
++		break;
++	}
++
++	return NOTIFY_OK;
++}
++
++static struct notifier_block imx23_cpu_clk_nb = {
++	.notifier_call = imx23_cpu_clk_notifier,
++};
++
+ static void __init clk_misc_init(void)
+ {
+ 	u32 val;
+@@ -70,5 +122,7 @@ static void __init mx23_clocks_init(struct device_node *np)
+ {
+ 	struct device_node *dcnp;
++	unsigned long cpu_rate;
++	int ret;
+ 	u32 i;
+ 
+ 	dcnp = of_find_compatible_node(NULL, NULL, "fsl,imx23-digctl");
+@@ -138,6 +193,25 @@ static void __init mx23_clocks_init(struct device_node *np)
+ 
+ 	for (i = 0; i < ARRAY_SIZE(clks_init_on); i++)
+ 		clk_prepare_enable(clks[clks_init_on[i]]);
++
++	ret = clk_notifier_register(clks[IMX23_CLK_CPU], &imx23_cpu_clk_nb);
++	if (ret) {
++		pr_err("failed to register CPU clock notifier: %d\n", ret);
++		return;
++	}
++
++	cpu_rate = clk_get_rate(clks[IMX23_CLK_CPU]);
++	switch (cpu_rate) {
++	case CPU_FREQ_64MHZ:
++		imx23_set_armcache_timing(ARMCACHE_TIMING_11);
++		break;
++	case 261818182:
++	case 360000000:
++	case 392727273:
++	case 454736842:
++		imx23_set_armcache_timing(ARMCACHE_TIMING_00);
++		break;
++	}
+ 
+ }
+ CLK_OF_DECLARE(imx23_clkctrl, "fsl,imx23-clkctrl", mx23_clocks_init);
+-- 
+2.39.2

@@ -1,0 +1,70 @@
+clk: mxs: round the i.MX23 cpu_pll divider to the closest rate
+
+cpufreq passes frequencies truncated to kHz, so dev_pm_opp_set_rate()
+asks clk_round_rate() for a rate slightly below the OPP rate. The
+default divider rounding never exceeds the request, so e.g. 454736000
+resolved to 240 MHz (FRAC 18, DIV 2) and the 261.8 MHz OPP was
+selected instead of the 454.7 MHz one. Use closest rounding for
+cpu_pll only.
+
+---
+diff --git a/drivers/clk/mxs/clk.h b/drivers/clk/mxs/clk.h
+--- a/drivers/clk/mxs/clk.h
++++ b/drivers/clk/mxs/clk.h
+@@ -27,6 +27,10 @@
+ struct clk *mxs_clk_div(const char *name, const char *parent_name,
+ 			void __iomem *reg, u8 shift, u8 width, u8 busy);
+ 
++struct clk *mxs_clk_div_flags(const char *name, const char *parent_name,
++			      void __iomem *reg, u8 shift, u8 width, u8 busy,
++			      u8 div_flags);
++
+ struct clk *mxs_clk_frac(const char *name, const char *parent_name,
+ 			 void __iomem *reg, u8 shift, u8 width, u8 busy);
+ 
+diff --git a/drivers/clk/mxs/clk-div.c b/drivers/clk/mxs/clk-div.c
+--- a/drivers/clk/mxs/clk-div.c
++++ b/drivers/clk/mxs/clk-div.c
+@@ -67,8 +67,9 @@
+ 	.set_rate = clk_div_set_rate,
+ };
+ 
+-struct clk *mxs_clk_div(const char *name, const char *parent_name,
+-			void __iomem *reg, u8 shift, u8 width, u8 busy)
++struct clk *mxs_clk_div_flags(const char *name, const char *parent_name,
++			      void __iomem *reg, u8 shift, u8 width, u8 busy,
++			      u8 div_flags)
+ {
+ 	struct clk_div *div;
+ 	struct clk *clk;
+@@ -90,7 +91,7 @@
+ 	div->divider.reg = reg;
+ 	div->divider.shift = shift;
+ 	div->divider.width = width;
+-	div->divider.flags = CLK_DIVIDER_ONE_BASED;
++	div->divider.flags = CLK_DIVIDER_ONE_BASED | div_flags;
+ 	div->divider.lock = &mxs_lock;
+ 	div->divider.hw.init = &init;
+ 	div->ops = &clk_divider_ops;
+@@ -101,3 +102,9 @@
+ 
+ 	return clk;
+ }
++
++struct clk *mxs_clk_div(const char *name, const char *parent_name,
++			void __iomem *reg, u8 shift, u8 width, u8 busy)
++{
++	return mxs_clk_div_flags(name, parent_name, reg, shift, width, busy, 0);
++}
+diff --git a/drivers/clk/mxs/clk-imx23.c b/drivers/clk/mxs/clk-imx23.c
+--- a/drivers/clk/mxs/clk-imx23.c
++++ b/drivers/clk/mxs/clk-imx23.c
+@@ -170,7 +170,7 @@
+ 	clks[IMX23_CLK_EMI_SEL] = mxs_clk_mux("emi_sel", CLKSEQ, 6, 1, emi_sels, ARRAY_SIZE(emi_sels));
+ 	clks[IMX23_CLK_CPU] = mxs_clk_mux("cpu", CLKSEQ, 7, 1, cpu_sels, ARRAY_SIZE(cpu_sels));
+ 	clks[IMX23_CLK_ETM_SEL] = mxs_clk_mux("etm_sel", CLKSEQ, 8, 1, sel_cpu, ARRAY_SIZE(sel_cpu));
+-	clks[IMX23_CLK_CPU_PLL] = mxs_clk_div("cpu_pll", "ref_cpu", CPU, 0, 6, 28);
++	clks[IMX23_CLK_CPU_PLL] = mxs_clk_div_flags("cpu_pll", "ref_cpu", CPU, 0, 6, 28, CLK_DIVIDER_ROUND_CLOSEST);
+ 	clks[IMX23_CLK_CPU_XTAL] = mxs_clk_div("cpu_xtal", "ref_xtal", CPU, 16, 10, 29);
+ 	clks[IMX23_CLK_HBUS] = mxs_clk_div("hbus", "cpu", HBUS, 0, 5, 29);
+ 	clks[IMX23_CLK_XBUS] = mxs_clk_div("xbus", "ref_xtal", XBUS, 0, 10, 31);
